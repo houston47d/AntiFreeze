@@ -118,7 +118,7 @@ static const struct {
 };
 byte testScriptIndex = 0;
 
-void processTestScript(void*) {
+void processTestScript() {
   uint16_t delay = 0;
   bool seconds = false;
   do {

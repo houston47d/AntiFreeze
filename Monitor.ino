@@ -63,7 +63,7 @@ void setupZoneCallOut( struct zoneCallInfo& info ) {
   info.zoneCallOut->write( true );
   if( info.waitForValveTimer >= 0 ) // should never happen...
     timer.deleteTimer( info.waitForValveTimer );
-  info.waitForValveTimer = timer.setTimeout( callOutputToValveTimeoutMs, zoneCallWaitForValveTimout, false, &info );
+  info.waitForValveTimer = timer.setTimeout( callOutputToValveTimeoutMs, zoneCallWaitForValveTimout, &info, false );
   if( info.waitForValveTimer == -1 ) {
     writeLogEntry( F("Error: failed call to setTimeout (1)") );
   }
@@ -77,7 +77,7 @@ void checkForValveOpen( struct zoneCallInfo& info ) {
     info.waitForValveTimer = -1;
     if( info.holdTimer >= 0 ) // should never happen...
       timer.deleteTimer( info.holdTimer );
-    info.holdTimer = timer.setTimeout( info.holdDurationMs, zoneCallExpired, false, &info );
+    info.holdTimer = timer.setTimeout( info.holdDurationMs, zoneCallExpired, &info, false );
     if( info.holdTimer == -1 ) {
       writeLogEntry( F("Error: failed call to setTimeout (2)") );
     }
@@ -247,12 +247,12 @@ void checkIoExpanderState() {
     unsigned int errorCount = ioExp0.errorCount();
     if( errorCount > 0 ) {
       if( logfile ) {      
-        logfile.print( s_currentCycleHMS );
+        logfile.print( getCurrentTime() );
         logfile.print( F(",") );
         logfile.print( F("Errors detected in ioExp communication ") );
         logfile.println( errorCount );
       }
-      _print3( s_currentCycleHMS );
+      _print3( getCurrentTime() );
       _print3( F(",") );
       _print3( F("Errors detected in ioExp communication ") );
       _println3( errorCount );
@@ -269,7 +269,9 @@ void checkIoExpanderState() {
   }
 }
 
-void processMonitorTimer(void*) {
+void processMonitorTimer() {
+
+  updateCurrentTime();
 
   if( active.currentState ) {
     // Go through and read all of our inputs, recording changes in the log file.

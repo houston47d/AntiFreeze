@@ -1,10 +1,36 @@
 
+char* generateUint( char* buffer, uint16_t num, uint8_t digits ) {
+  for( uint8_t i = digits; i > 0; --i ) {
+    buffer[i-1] = '0' + (num % 10);
+    num = num / 10;
+  }
+  return( buffer+digits );
+}
+
+void generateDateTimeRTC( char* buffer ) {
+#if USE_RTC
+  DateTime now = rtc.now();
+  uint8_t i = 0;
+  buffer = generateUint( buffer, now.year(), 4 );
+  *buffer++ = '/';
+  buffer = generateUint( buffer, now.month(), 2 );
+  *buffer++ = '/';
+  buffer = generateUint( buffer, now.day(), 2 );
+  *buffer++ = ' ';
+  buffer = generateUint( buffer, now.hour(), 2 );
+  *buffer++ = ':';
+  buffer = generateUint( buffer, now.minute(), 2 );
+  *buffer++ = ':';
+  buffer = generateUint( buffer, now.second(), 2 );
+  *buffer++ = 0;
+#endif
+}
+
 void generateHMS( char* buffer, unsigned long seconds ) {
   byte hour = 0;
   if( seconds >= 3600 ) {
     hour = (byte) (seconds / 3600);
-    if( hour > 99 ) 
-      hour = 99;
+    hour = hour % 100;
     seconds = seconds % 3600;
   }
   byte minute = 0;
@@ -26,11 +52,11 @@ void generateHMS( char* buffer, unsigned long seconds ) {
 
 void writeLogEntry( const __FlashStringHelper* message ) {
   if( logfile ) {      
-    logfile.print( s_currentCycleHMS );
+    logfile.print( getCurrentTime() );
     logfile.print( F(",") );
     logfile.println( message );
   }
-  _print3( s_currentCycleHMS );
+  _print3( getCurrentTime() );
   _print3( F(",") );
   _println2( message );
 }
@@ -43,8 +69,7 @@ void writeLogEntry( struct BoolSignal& signal ) {
     strcpy( durationHMS, "--:--:--" );
 
   if( logfile ) {      
-    // replace millis() with the real-time-clock when available.
-    logfile.print( s_currentCycleHMS );
+    logfile.print( getCurrentTime() );
     logfile.print( F(",") );
     logfile.print( durationHMS );
     logfile.print( F(",") );
@@ -52,7 +77,7 @@ void writeLogEntry( struct BoolSignal& signal ) {
     logfile.print( F(",") );
     logfile.println( signal.currentState ? 1 : 0 );
   }
-  _print3( s_currentCycleHMS );
+  _print3( getCurrentTime() );
   _print3( F(",") );
   _print3( durationHMS );
   _print3( F(",") );
@@ -82,38 +107,6 @@ void readSignalAndLogChange( struct BoolSignal& signal ) {
   signal.write( stateNow );
 }
 
-#if USE_RTC
-void writeLogEntryRtc() {
-  DateTime now = rtc.now();
-  if( logfile ) {
-    logfile.print(now.year(), DEC);
-    logfile.print('/');
-    logfile.print(now.month(), DEC);
-    logfile.print('/');
-    logfile.print(now.day(), DEC);
-    logfile.print(" ");
-    logfile.print(now.hour(), DEC);
-    logfile.print(':');
-    logfile.print(now.minute(), DEC);
-    logfile.print(':');
-    logfile.print(now.second(), DEC);
-    logfile.println();
-  }  
-  _print3(now.year());
-  _print3('/');
-  _print3(now.month());
-  _print3('/');
-  _print3(now.day());
-  _print3(" ");
-  _print3(now.hour());
-  _print3(':');
-  _print3(now.minute());
-  _print3(':');
-  _print3(now.second());
-  _println3();
-}
-#endif
-
 float readTemp() {
   // read the voltage, and scale from 0..1023 -> 0.0..5.0.
   float voltage = (analogRead( tempPin ) * 5.0 / 1024.0);
@@ -121,4 +114,5 @@ float readTemp() {
   float tempC = (voltage - .5) * 100.0;
   return tempC;
 }
+
 

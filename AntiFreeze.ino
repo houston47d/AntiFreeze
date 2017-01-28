@@ -1,5 +1,6 @@
-#define VERSION "1.5"
+#define VERSION "1.6"
 
+// VERSION 1.6 - addition (for real) of the RTC and logging of real-time.
 // VERSION 1.5 - separation of monitor, purge, and anti-freeze modes. Purge only zones 2 and 3.
 // VERSION 1.4 - SRAM use reduction (to make room for the RTC), zone1Active only looks at thermostat calls.
 // VERSION 1.3 - addition of logging parameters, real-time-clock.
@@ -19,8 +20,9 @@
 
 #define DIAG_STANDALONE 0
 #define VERBOSITY 3
-#define USE_RTC 0
+#define USE_RTC 1
 
+// no idea why this helps, but removing it causes functions from Utilities to not be defined.
 extern void generateHMS( char* buffer, unsigned long seconds );
 
 // All the Serial.print statements add up. Removing all of them from a full build cuts down almost 4K.
@@ -124,12 +126,26 @@ bool ioExpPresent = false;
 MCP ioExp0( 0, ioExpCs );
 
 uint16_t s_currentCycleS = 0;
-char s_currentCycleHMS[10];
+char s_currentCycleTime[22];  // DD-MMM-YYYY HH:MM:SS or HH:MM:SS
 
-void updateCurrentTime(void*) {
+void updateCurrentTime() {
   unsigned long currentCycleS = (millis() / 1000);
   s_currentCycleS = (uint16_t) currentCycleS;
-  generateHMS( s_currentCycleHMS, currentCycleS );
+  s_currentCycleTime[0] = 0;
+}
+char* getCurrentTime() {
+  if( s_currentCycleTime[0] == 0 ) {
+#if USE_RTC
+    if( rtcPresent )
+      generateDateTimeRTC( s_currentCycleTime );
+    else
+#endif
+    {
+      unsigned long currentCycleS = (millis() / 1000);
+      generateHMS( s_currentCycleTime, currentCycleS );
+    }
+  }
+  return( s_currentCycleTime );
 }
 
 #if DIAG_STANDALONE
@@ -144,7 +160,7 @@ uint16_t s_ioExp = 0;
 #define EEPROM_ADDR_LOG (EEPROM_ADDR_SIG+4)
 #define EEPROM_SIG 0xae
 
-void watchdogResetFunc(void*) {
+void watchdogResetFunc() {
   wdt_reset();
 }
 
@@ -170,15 +186,15 @@ struct BoolSignal {
 };
 
 static const char activeName[] PROGMEM = { "Active" };
-BoolSignal active( eNone, 0, 0, activeName, false, true );
+BoolSignal active( eNone, 0, 0, activeName, false, false );
 static const char activePrgName[] PROGMEM = { "Purge" };
 BoolSignal activePrg( eNone, 0, 0, activePrgName, false, true );
 static const char activeAFName[] PROGMEM = { "AntiFreeze" };
 BoolSignal activeAF( eNone, 0, 0, activeAFName, false, true );
 static const char zone2NeedsCallName[] PROGMEM = { "Zone2NeedsCall" };
-BoolSignal zone2NeedsCall( eNone, 0, 0, zone2NeedsCallName, false, true );
+BoolSignal zone2NeedsCall( eNone, 0, 0, zone2NeedsCallName, false, false );
 static const char zone2ReallyNeedsCallName[] PROGMEM = { "Zone2ReallyNeedsCall" };
-BoolSignal zone2ReallyNeedsCall( eNone, 0, 0, zone2ReallyNeedsCallName, false, true );
+BoolSignal zone2ReallyNeedsCall( eNone, 0, 0, zone2ReallyNeedsCallName, false, false );
 static const char anyZonesCallingName[] PROGMEM = { "AnyZonesCalling" };
 BoolSignal anyZonesCalling( eNone, 0, 0, anyZonesCallingName, false, false );
 static const char zone1CallThermName[] PROGMEM = { "Zone1CallTherm" };
@@ -285,7 +301,7 @@ BoolSignal* const s_ValveSignals[] PROGMEM = {
 };
 byte s_NumCallSignals = sizeof( s_CallSignals ) / sizeof( s_CallSignals[0] );
 
-void checkForSecondsOverflow(void*) {
+void checkForSecondsOverflow() {
   // Since we are storing the priorTransition as an uint16_t, it has a range of a bit over 18 hours.
   // Since we expect to be running for many, many days, we will encounter many wrap-arounds. So once
   // the current time starts approaching the priorTransition from the other side, we set the priorTransition
@@ -297,8 +313,11 @@ void checkForSecondsOverflow(void*) {
       // by casting this to a signed value, a negative result indicates we are now
       // more than half our maximum time past the event (about 9 hours), and we mark it 
       // as invalid.
-      int16_t relative = (int16_t) (s_currentCycleS - sig->priorTransition);
-      if( relative < 0 )
+      // int16_t relative = (int16_t) (s_currentCycleS - sig->priorTransition);
+      // if( relative < 0 )
+      //  sig->priorValid = false;
+      uint16_t relative = (s_currentCycleS - sig->priorTransition);
+      if( relative > HOURStoS( 17 ) )
         sig->priorValid = false;
     }
   }
@@ -316,10 +335,10 @@ void showCapabilities() {
 #endif // DIAG_STANDALONE
   _println2( F("") );
 #if USE_RTC
-  _print2( F("Real-time clock is ") ); _println2( rtcPresent ? F("present") : F("ABSENT") );
+  bool rtcRunning = rtc.isrunning();
+  _print2( F("Real-time clock is ") ); _print2( rtcPresent ? F("present") : F("ABSENT") ); _print2( F(" and ") ); _println2( rtcRunning ? F("running") : F("STOPPED") );
 #endif
-  _print2( F("IoExpander CS on pin ") ); _println2( ioExpCs );
-  _print2( F("IoExpander is ") ); _println2( ioExpPresent ? F("present") : F("ABSENT") );
+  _print2( F("IoExpander CS on pin ") ); _print2( ioExpCs ); _print2( F(" is ") ); _println2( ioExpPresent ? F("present") : F("ABSENT") );
   _print2( F("SD Card CS on pin ") ); _println2( sdCardCs );
   _println2( F("Signals:") );
   for( byte i = 0; i < s_NumSignals; ++i ) {
@@ -348,17 +367,9 @@ void ioExpHandler() {
 #endif
 }
 
-//int s_greenLedFlashTimer = -1;
-//int s_redLedFlashTimer = -1;
-//void ledFlashExpired(void* param) {
-//  BoolSignal* led( reinterpret_cast<BoolSignal*>( param ) );
-//  led->write( !led->currentState );
-//  led->priorValid = true;
-//  led->priorTransition = s_currentCycleS;
-//}
 uint8_t s_ledTimer = -1;
 uint8_t s_ledCounter = 0;
-void ledTimerExpired(void* ) {
+void ledTimerExpired() {
   ++s_ledCounter;
   bool greenState = false;
   bool redState = active.currentState && !logfile;
@@ -389,10 +400,6 @@ void setup() {
 #if DIAG_STANDALONE
   timer.setTimeout( 1000, processTestScript );
 #endif
-//  s_greenLedFlashTimer = timer.setInterval( 1000, ledFlashExpired, false, &greenLed );
-//  timer.enable( s_greenLedFlashTimer, false );
-//  s_redLedFlashTimer = timer.setInterval( 1000, ledFlashExpired, false, &redLed );
-//  timer.enable( s_redLedFlashTimer, false );
   s_ledTimer = timer.setInterval( 500, ledTimerExpired );
 
   SPI.begin();
@@ -400,13 +407,6 @@ void setup() {
 
 #if USE_RTC
   rtcPresent = rtc.begin();
-  if( rtcPresent ) {
-    if (!rtc.isrunning() ) {
-      _println3( F("RTC is NOT running, setting time") );
-      // following line sets the RTC to the date & time this sketch was compiled
-      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    }
-  }
 #endif
 
   ioExpPresent = ioExp0.begin();
@@ -446,7 +446,6 @@ void setup() {
 
   // Setup a timer to invalid the times stored in the signals before the timer wraps around.
   timer.setInterval( MINUTEStoS(60), checkForSecondsOverflow, true );
-  timer.setInterval( SECONDStoMS(1), updateCurrentTime );
 
   // Enable the hardware watchdog timer for a 2 second timeout, and setup a timer to 
   // reset the timer every 1/4 second. Using the timer ensures that it runs any time
@@ -456,7 +455,7 @@ void setup() {
 
   // This is the function that performs the bulk of our processing, reading inputs and 
   // determining a new state for the outputs.
-  timer.setInterval( 1000, processMonitorTimer );
+  timer.setInterval( SECONDStoMS(1), processMonitorTimer );
 }
 
 void processPushButton() {
@@ -540,24 +539,13 @@ void processActiveStateChange() {
           break;  // leave the loop!
         }
       }
-      _print1( logfile ? F("Logging to file ") : F("Error: failed to open file ") ); _println1( filename );
+      _print1( logfile ? F("  + Logging to file ") : F("  + Error: failed to open file ") ); _println1( filename );
     }
     else {
-      _println1( F("Error: no SD card found") );
-      _print1( F("  errorCode ") ); _println1( SD.errorCode() );
-      _print1( F("  errorData ") ); _println1( SD.errorData() );
+      _print1( F("  + Error: no SD card found") ); _print1( F(", code ") ); _print1( SD.errorCode() ); _print1( F(" ") ); _print1( F("  errorData ") ); _println1( SD.errorData() );
     }
   }
 
-#if USE_RTC
-  if( rtcPresent )
-    writeLogEntryRtc();
-#endif
-  
-  // greenLed.write( active.currentState );
-  // redLed.write( false );
-  // if( s_redLedFlashTimer >= 0 ) timer.enable( s_redLedFlashTimer, active.currentState && !logfile );
-  
   if( !active.currentState ) {
     if( logfile ) {
       logfile.flush();
@@ -614,10 +602,6 @@ void loop() {
 
     if( wasActivePrg != activePrg.currentState 
         || wasActiveAF != activeAF.currentState ) {
-//      if( s_greenLedFlashTimer >= 0 ) {
-//        timer.updateTimer( s_greenLedFlashTimer, activeAF.currentState ? 500 : 1000 );
-//        timer.enable( s_greenLedFlashTimer, activeAF.currentState );
-//      }
       activeChanged( active.currentState, activePrg.currentState, activeAF.currentState );
       wasActivePrg = activePrg.currentState;
       wasActiveAF = activeAF.currentState;
