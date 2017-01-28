@@ -2,14 +2,17 @@
 void BoolSignal::init() {
   switch( source ) {
   case eDigitalIo:
+    _print3( F("setting Digital ") ); _print3( pin ); _print3( F(" to ") ); _println3( type );
     pinMode( pin, type );
     if( type == OUTPUT )
       digitalWrite( pin, activeLow ? HIGH : LOW );
     break;
   case eIoExpander:
-    ioExp0.pinMode( pin, type );
-    if( type == OUTPUT )
-      ioExp0.digitalWrite( pin, activeLow ? HIGH : LOW );
+    if( ioExpPresent ) {
+      ioExp0.pinMode( pin, type );
+      if( type == OUTPUT )
+         ioExp0.digitalWrite( pin, activeLow ? HIGH : LOW );
+    }
     break;
   default:
     break;
@@ -23,7 +26,9 @@ void BoolSignal::write( bool value, bool force ) {
         digitalWrite( pin, value ^ activeLow ? HIGH : LOW );
         break;
       case eIoExpander:
-        ioExp0.digitalWrite( pin, value ^ activeLow ? HIGH : LOW );
+        if( ioExpPresent ) {
+          ioExp0.digitalWrite( pin, value ^ activeLow ? HIGH : LOW );
+        }
         break;
       default:
         break;
@@ -272,6 +277,9 @@ void checkIoExpanderState() {
 void processMonitorTimer() {
 
   updateCurrentTime();
+  
+  // _println3( digitalRead( pushButton.pin ) == HIGH ? F("HIGH") : F("LOW") );
+  // pinMode( pushButton.pin, INPUT_PULLUP );
 
   if( active.currentState ) {
     // Go through and read all of our inputs, recording changes in the log file.

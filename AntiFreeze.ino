@@ -1,5 +1,6 @@
-#define VERSION "1.6"
+#define VERSION "1.7"
 
+// VERSION 1.7 - completion of RTC usage. Ready for Winter 2016-2017.
 // VERSION 1.6 - addition (for real) of the RTC and logging of real-time.
 // VERSION 1.5 - separation of monitor, purge, and anti-freeze modes. Purge only zones 2 and 3.
 // VERSION 1.4 - SRAM use reduction (to make room for the RTC), zone1Active only looks at thermostat calls.
@@ -15,44 +16,18 @@
 // to a real furnace all of the calls read back active (which is a highly unusual state for
 // the furnace and not one which I'm trying to modify the behavior of). Selecting CALLS_ACTIVE_LOW
 // as false makes it better behaved in this case.
-#define CALLS_ACTIVE_LOW true
-// #define CALLS_ACTIVE_LOW false
+// #define CALLS_ACTIVE_LOW true
+#define CALLS_ACTIVE_LOW false
 
+// DIAG_STANDALONE runs the system through a test script in which the input signals are prescribed.
+// To get it to match the ReferenceLog.csv, CALLS_ACTIVE_LOW needs to be true (the default) and USE_RTC
+// needs to be 0 (so the times are consistent).
 #define DIAG_STANDALONE 0
 #define VERBOSITY 3
 #define USE_RTC 1
+#define USE_SLEEP 1
 
-// no idea why this helps, but removing it causes functions from Utilities to not be defined.
-extern void generateHMS( char* buffer, unsigned long seconds );
-
-// All the Serial.print statements add up. Removing all of them from a full build cuts down almost 4K.
-// define VERBOSITY 0 removes all of them.
-// define VERBOSITY 1 includes only the highest level statements, like program identification and errors.
-// define VERBOSITY 2 includes statements like program configuration and mode changes.
-// define VERBOSITY 3 includes everything.
-// Keep these levels in mind when adding new statements. Always use one of the _printN and _printlnN 
-// variants rather than calling Serial.print[ln]() directly.
-#if VERBOSITY >= 1
-#define _print1(x) Serial.print(x)
-#define _println1(x) Serial.println(x)
-#else
-#define _print1(x)
-#define _println1(x)
-#endif
-#if VERBOSITY >= 2
-#define _print2(x) Serial.print(x)
-#define _println2(x) Serial.println(x)
-#else
-#define _print2(x)
-#define _println2(x)
-#endif
-#if VERBOSITY >= 3
-#define _print3(x) Serial.print(x)
-#define _println3(x) Serial.println(x)
-#else
-#define _print3(x)
-#define _println3(x)
-#endif
+#include "Verbosity.h"
 
 #include <SPI.h>
 #include <SD.h>
@@ -62,7 +37,9 @@ extern void generateHMS( char* buffer, unsigned long seconds );
 #endif
 #include <MCP23S17.h>
 #include <SimpleTimer.h>
-// #include <Sleep_n0m1.h>
+#if USE_SLEEP
+#include <Sleep_n0m1.h>
+#endif
 #include <EEPROM.h>
 #include <avr/pgmspace.h>
 #include <avr/wdt.h>
@@ -105,7 +82,7 @@ extern void generateHMS( char* buffer, unsigned long seconds );
 
 #define tempPin A0
 
-#undef USE_SLEEP
+#define USE_SLEEP 1
 #if USE_SLEEP
 Sleep sleep;
 bool abortSleep = false;
@@ -116,10 +93,26 @@ SimpleTimer timer;
 bool sdCardPresent = false;
 char filename[] = "LOGGER00.CSV";
 File logfile;
+// Want to periodically sync the log file, which forces writing out the directory information,
+// in case of a loss-of-power. Otherwise, the directory entry indicates a zero length and you 
+// get nothing in the log file. But it is expensive, so don't want to do it too often. The 
+// 'File' implementation of flush simply calls sync - it doesn't seem quite right, but I have 
+// no other access to the underlying SdFile class it is wrapping.
+void syncLogFile() {
+  if(logfile) {
+    logfile.flush();  
+  }
+}
 
 #if USE_RTC
 bool rtcPresent = false;
 RTC_DS1307 rtc;
+// this function is provided to the SD card in order to put real timestamps on the files.
+void myDateTimeCallback(uint16_t* date, uint16_t* time) {
+  DateTime now = rtc.now();
+  *date = FAT_DATE(now.year(), now.month(), now.day());
+  *time = FAT_TIME(now.hour(), now.minute(), now.second());
+}
 #endif
 
 bool ioExpPresent = false;
@@ -170,8 +163,10 @@ struct BoolSignal {
     uint8_t type : 2;
     uint8_t activeLow : 1;
     uint8_t logChanges : 1;
+    // uint8_t reserved0 : 2;
     uint8_t priorValid : 1;
     uint8_t currentState : 1;
+    // uint8_t reserved1 : 6;
     uint8_t pin;
     const PROGMEM char* name;
     uint16_t priorTransition;
@@ -186,15 +181,15 @@ struct BoolSignal {
 };
 
 static const char activeName[] PROGMEM = { "Active" };
-BoolSignal active( eNone, 0, 0, activeName, false, false );
+BoolSignal active( eNone, 0, 0, activeName, false, true );
 static const char activePrgName[] PROGMEM = { "Purge" };
 BoolSignal activePrg( eNone, 0, 0, activePrgName, false, true );
 static const char activeAFName[] PROGMEM = { "AntiFreeze" };
 BoolSignal activeAF( eNone, 0, 0, activeAFName, false, true );
 static const char zone2NeedsCallName[] PROGMEM = { "Zone2NeedsCall" };
-BoolSignal zone2NeedsCall( eNone, 0, 0, zone2NeedsCallName, false, false );
+BoolSignal zone2NeedsCall( eNone, 0, 0, zone2NeedsCallName, false, true );
 static const char zone2ReallyNeedsCallName[] PROGMEM = { "Zone2ReallyNeedsCall" };
-BoolSignal zone2ReallyNeedsCall( eNone, 0, 0, zone2ReallyNeedsCallName, false, false );
+BoolSignal zone2ReallyNeedsCall( eNone, 0, 0, zone2ReallyNeedsCallName, false, true );
 static const char anyZonesCallingName[] PROGMEM = { "AnyZonesCalling" };
 BoolSignal anyZonesCalling( eNone, 0, 0, anyZonesCallingName, false, false );
 static const char zone1CallThermName[] PROGMEM = { "Zone1CallTherm" };
@@ -207,9 +202,9 @@ static const char pushButtonName[] PROGMEM = { "PushButton" };
 BoolSignal pushButton( eDigitalIo, 2, INPUT_PULLUP, pushButtonName, true, false );
 // The two LEDs are tied to +V through a resistor, so 'on' is LOW (and thus activeLow = true).
 static const char greenLedName[] PROGMEM = { "GreenLed" };
-BoolSignal greenLed( eDigitalIo, A4, OUTPUT, greenLedName, true, false );
+BoolSignal greenLed( eDigitalIo, A2, OUTPUT, greenLedName, true, false );
 static const char redLedName[] PROGMEM = { "RedLed" };
-BoolSignal redLed( eDigitalIo, A5, OUTPUT, redLedName, true, false );
+BoolSignal redLed( eDigitalIo, A3, OUTPUT, redLedName, true, false );
 // There are 13 inputs covering the calls into the controller and the valve controls
 // out of the controller. The calls are active low because the thermostat grounds the
 // signal to call for heat.
@@ -371,8 +366,10 @@ uint8_t s_ledTimer = -1;
 uint8_t s_ledCounter = 0;
 void ledTimerExpired() {
   ++s_ledCounter;
+  // _println3(s_ledCounter);
   bool greenState = false;
-  bool redState = active.currentState && !logfile;
+  // Let's set the red if either the IO expander is not present or the logfile couldn't be opened.
+  bool redState = !ioExpPresent || active.currentState && !logfile;
   if( active.currentState ) {
     if( activeAF.currentState ) {
       // if purge + antifreeze, then fast flash.
@@ -390,7 +387,9 @@ void ledTimerExpired() {
     greenState = false;
   }
 
+  pinMode( greenLed.pin, OUTPUT );
   greenLed.write( greenState );
+  pinMode( redLed.pin, OUTPUT );
   redLed.write( redState );
 }
 
@@ -406,15 +405,29 @@ void setup() {
   SPI.setClockDivider(SPI_CLOCK_DIV16);
 
 #if USE_RTC
-  rtcPresent = rtc.begin();
+  // The begin() function always returns true - no indication of whether the clock
+  // is actually present.
+  rtc.begin();
+  uint8_t origData = rtc.readnvram( 0 );
+  _print3( "origData " ); _println3( origData );
+  rtc.writenvram( 0, origData ^ 0xff );
+  _print3( "wroteData " ); _println3( origData ^ 0xff );
+  uint8_t readData = rtc.readnvram( 0 );
+  _print3( "readData " ); _println3( readData );
+  rtc.writenvram( 0, origData );
+  rtcPresent = (readData == (origData ^ 0xff));
+  if( rtcPresent ) {
+     SdFile::dateTimeCallback( myDateTimeCallback );
+  }
 #endif
 
   ioExpPresent = ioExp0.begin();
+  
+  for( byte i = 0; i < s_NumSignals; ++i ) {
+    BoolSignal* sig( (BoolSignal*) pgm_read_word_near( &s_Signals[i] ) );
+    sig->init();
+  }
   if( ioExpPresent ) {
-    for( byte i = 0; i < s_NumSignals; ++i ) {
-      BoolSignal* sig( (BoolSignal*) pgm_read_word_near( &s_Signals[i] ) );
-      sig->init();
-    }
     // Set MIRROR (shared interrupt pin), ensure ODR and INTPOL are clear.
     uint8_t ioCon = ioExp0.byteRead(IOCON);
     ioExp0.byteWrite(IOCON, (ioCon | 0x40) & ~0x06);
@@ -430,6 +443,8 @@ void setup() {
   }
     
   // Note that 'FALLING' will not work for lower power states - that requires 'LOW'.
+  // pinMode( pushButton.pin, INPUT_PULLUP );
+  // if( pushButton.pin != 2 || pushButton.type != INPUT_PULLUP || pushButton.logChanges || !pushButton.activeLow ) Serial.println( F("PushButton appears corrupt") );
   attachInterrupt(digitalPinToInterrupt( pushButton.pin ), switchHandler, FALLING); 
 
   showCapabilities();
@@ -444,8 +459,12 @@ void setup() {
 #endif
   }
 
-  // Setup a timer to invalid the times stored in the signals before the timer wraps around.
+  // Setup a timer to invalidate the times stored in the signals before the timer wraps around.
   timer.setInterval( MINUTEStoS(60), checkForSecondsOverflow, true );
+  // Setup a timer to sync the log file, if open. This updates the directory entry to reflect
+  // current file state. It has the side effect of flushing the file if the directory entry
+  // is dirty (since it has to load in the directory entry).
+  timer.setInterval( MINUTEStoS(60), syncLogFile, true );
 
   // Enable the hardware watchdog timer for a 2 second timeout, and setup a timer to 
   // reset the timer every 1/4 second. Using the timer ensures that it runs any time
@@ -540,6 +559,10 @@ void processActiveStateChange() {
         }
       }
       _print1( logfile ? F("  + Logging to file ") : F("  + Error: failed to open file ") ); _println1( filename );
+
+      // Since the log file wasn't open when we switched to the active state, force it to be 
+      // logged now.
+      writeLogEntry( active );
     }
     else {
       _print1( F("  + Error: no SD card found") ); _print1( F(", code ") ); _print1( SD.errorCode() ); _print1( F(" ") ); _print1( F("  errorData ") ); _println1( SD.errorData() );
@@ -548,7 +571,6 @@ void processActiveStateChange() {
 
   if( !active.currentState ) {
     if( logfile ) {
-      logfile.flush();
       logfile.close();
     }
     activeChanged( active.currentState, false, false );
@@ -611,8 +633,8 @@ void loop() {
       EEPROM.update( EEPROM_ADDR_ANTIFREEZE, activeAF.currentState );  
     }
 
-#if 0
-#if !DIAG_STANDALONE
+#if !DIAG_STANDALONE && USE_SLEEP
+    
     // flushing the serial uart does nothing if nothing was written, but ensures it gets
     // out before sleeping if data was written.
     Serial.flush();
@@ -620,19 +642,15 @@ void loop() {
     // it each time an entry is written.
     if( logfile )
       logfile.flush();
-#if USE_SLEEP
     // using 'idle' mode keeps the timers running, which I need since I don't currently
     // have a real-time-clock. Once I have an RTC, I'll switch it.
+#if 0 && USE_RTC
+    sleep.adcMode();
+#else
     sleep.idleMode();
-    // sleep.adcMode();
+#endif
     abortSleep = false;
     sleep.sleepDelay( timeout, abortSleep );
-#endif
-
-    // delay( timeout );
-#else
-    delay( 10 );
-#endif
 #endif
   }
 }
