@@ -253,12 +253,12 @@ void checkIoExpanderState() {
     if( errorCount > 0 ) {
       if( logfile ) {      
         logfile.print( getCurrentTime() );
-        logfile.print( F(",") );
+        logfile.print( F(",--:--:--,") );
         logfile.print( F("Errors detected in ioExp communication ") );
         logfile.println( errorCount );
       }
       _print3( getCurrentTime() );
-      _print3( F(",") );
+      _print3( F(",--:--:--,") );
       _print3( F("Errors detected in ioExp communication ") );
       _println3( errorCount );
     }

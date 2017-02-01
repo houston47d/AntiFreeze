@@ -16,16 +16,16 @@
 // to a real furnace all of the calls read back active (which is a highly unusual state for
 // the furnace and not one which I'm trying to modify the behavior of). Selecting CALLS_ACTIVE_LOW
 // as false makes it better behaved in this case.
-// #define CALLS_ACTIVE_LOW true
-#define CALLS_ACTIVE_LOW false
+#define CALLS_ACTIVE_LOW true
+// #define CALLS_ACTIVE_LOW false
 
 // DIAG_STANDALONE runs the system through a test script in which the input signals are prescribed.
 // To get it to match the ReferenceLog.csv, CALLS_ACTIVE_LOW needs to be true (the default) and USE_RTC
 // needs to be 0 (so the times are consistent).
 #define DIAG_STANDALONE 0
-#define VERBOSITY 3
+#define VERBOSITY 1
 #define USE_RTC 1
-#define USE_SLEEP 1
+#define USE_SLEEP 0
 
 #include "Verbosity.h"
 
@@ -82,7 +82,6 @@
 
 #define tempPin A0
 
-#define USE_SLEEP 1
 #if USE_SLEEP
 Sleep sleep;
 bool abortSleep = false;
