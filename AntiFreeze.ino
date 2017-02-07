@@ -1,5 +1,6 @@
-#define VERSION "1.7"
+#define VERSION "1.8"
 
+// VERSION 1.8 - refinements of sleep, watchdog, etc.
 // VERSION 1.7 - completion of RTC usage. Ready for Winter 2016-2017.
 // VERSION 1.6 - addition (for real) of the RTC and logging of real-time.
 // VERSION 1.5 - separation of monitor, purge, and anti-freeze modes. Purge only zones 2 and 3.
@@ -25,7 +26,13 @@
 #define DIAG_STANDALONE 0
 #define VERBOSITY 1
 #define USE_RTC 1
-#define USE_SLEEP 0
+#define USE_SLEEP 1
+#if !USE_SLEEP
+// the sleep library uses the WDT to periodically wake the processor from sleep states.
+#define USE_WDT 1
+#else
+#define USE_WDT 0
+#endif
 
 #include "Verbosity.h"
 
@@ -45,6 +52,8 @@
 #include <avr/wdt.h>
 
 #define sdCardCs 7
+// If running on the UNO with the Adafruit Music Make shield, SD card is on pin 4.
+// #define sdCardCs 4
 #define ioExpCs 10
 #define ioExpInt 3
 
@@ -152,9 +161,11 @@ uint16_t s_ioExp = 0;
 #define EEPROM_ADDR_LOG (EEPROM_ADDR_SIG+4)
 #define EEPROM_SIG 0xae
 
+#if USE_WDT
 void watchdogResetFunc() {
   wdt_reset();
 }
+#endif
 
 enum Source { eNone, eDigitalIo, eAnalogIo, eIoExpander };
 struct BoolSignal {
@@ -175,6 +186,7 @@ struct BoolSignal {
     uint16_t timeSincePrior() const {
       return( priorValid ? s_currentCycleS - priorTransition : -1 );
     }
+    void setLogChanges(bool enable);
     BoolSignal( Source _source, uint8_t _pin, uint8_t _type, const PROGMEM char* _name, bool _activeLow, bool _log  )
       : source( _source ), pin( _pin ), type( _type ), name( _name ), logChanges( _log ), priorValid( false ), priorTransition( 0 ), activeLow( _activeLow ), currentState( false ) {}
 };
@@ -234,7 +246,7 @@ BoolSignal inductor( eIoExpander, 2, INPUT, inductorName, false, true );
 static const char circulatorName[] PROGMEM = { "CirculatorOn" };
 BoolSignal circulator( eIoExpander, 1, INPUT, circulatorName, false, true );
 static const char burnerName[] PROGMEM = { "BurnerOn" };
-BoolSignal burner( eIoExpander, 0, INPUT_PULLUP, burnerName, true, true );
+BoolSignal burner( eIoExpander, 0, INPUT_PULLUP, burnerName, true, false ); // burner is not currently connected, so don't log.
 
 // There are three call out signals that (currently) activate the respective zone call.
 // The relays are normally opened, and a high output closes the relay and grounds the
@@ -346,8 +358,11 @@ void showCapabilities() {
 }
 
 bool s_pushButtonPressed = false;
+bool s_pushButtonIntInstalled = false;
 void switchHandler() {
   s_pushButtonPressed = true;
+  detachInterrupt(digitalPinToInterrupt( pushButton.pin ));
+  s_pushButtonIntInstalled = false;
 #if USE_SLEEP
   abortSleep = true;
 #endif
@@ -436,15 +451,16 @@ void setup() {
     // Enable change interrupt on all input channels.
     ioExp0.wordWrite(GPINTENA, ioDirRead);
 
-    // The input is configured as a push-pull active low, so no pullup required.
-    // pinMode( ioExpInt, INPUT );
-    // attachInterrupt(digitalPinToInterrupt( ioExpInt ), ioExpHandler, FALLING); 
+    // The input is configured as a push-pull active low, so no pullup required. The IoExp asserts the 
+    // interrupt until a read of INTCAPA, done in the interrupt handler. Has to be LOW for it to wake
+    // us from sleep modes.
+    pinMode( ioExpInt, INPUT );
+    attachInterrupt(digitalPinToInterrupt( ioExpInt ), ioExpHandler, LOW); 
   }
     
   // Note that 'FALLING' will not work for lower power states - that requires 'LOW'.
-  // pinMode( pushButton.pin, INPUT_PULLUP );
-  // if( pushButton.pin != 2 || pushButton.type != INPUT_PULLUP || pushButton.logChanges || !pushButton.activeLow ) Serial.println( F("PushButton appears corrupt") );
-  attachInterrupt(digitalPinToInterrupt( pushButton.pin ), switchHandler, FALLING); 
+  s_pushButtonIntInstalled = true;
+  attachInterrupt(digitalPinToInterrupt( pushButton.pin ), switchHandler, LOW); 
 
   showCapabilities();
 
@@ -465,19 +481,25 @@ void setup() {
   // is dirty (since it has to load in the directory entry).
   timer.setInterval( MINUTEStoS(60), syncLogFile, true );
 
+#if USE_WDT
   // Enable the hardware watchdog timer for a 2 second timeout, and setup a timer to 
   // reset the timer every 1/4 second. Using the timer ensures that it runs any time
   // that the timer is run.
   timer.setInterval( 250, watchdogResetFunc );
   wdt_enable( WDTO_2S );
+#endif
 
+#if !USE_SLEEP
   // This is the function that performs the bulk of our processing, reading inputs and 
-  // determining a new state for the outputs.
+  // determining a new state for the outputs. If we are not using sleep, then we run it
+  // once a second on a timer. If using sleep, then it gets called on each interrupt from
+  // the IO expander.
   timer.setInterval( SECONDStoMS(1), processMonitorTimer );
+#endif
 }
 
 void processPushButton() {
-  // Do some debouncing and detect a long-press. Interrupt is on FALLING (not change),
+  // Do some debouncing and detect a long-press. Interrupt is on LOW (not change),
   // so we know we are looking for the active state. So we first wait for the signal to
   // stabilize on 'active' then for it to stabilize on 'inactive'. If it never stabilizes
   // on active, we ignore it. If the duration from the initial interrupt until it stabilizes
@@ -534,17 +556,25 @@ void processPushButton() {
     else
       active.write( true );
   }
+  // we have waited for the pushbutton to stabilize active, and then to stabilize inactive. So we should now
+  // be inactive and can install the interrupt handler again.
+  s_pushButtonIntInstalled = true;
+  attachInterrupt(digitalPinToInterrupt( pushButton.pin ), switchHandler, LOW); 
 }
 
 void processActiveStateChange() {
   if( active.currentState ) {
+#if USE_WDT
     // This can take several seconds if the card is not present.
     wdt_disable();
+#endif
 
     // do the SD.begin() here in case the card has been removed/reinserted
     sdCardPresent = SD.begin( sdCardCs );
 
+#if USE_WDT
     wdt_enable( WDTO_2S );
+#endif
 
     // create a new file
     if( sdCardPresent ) {
@@ -601,13 +631,16 @@ void loop() {
   while( true ) {
 
     if( s_pushButtonPressed ) {
+      s_pushButtonPressed = false;
       _println3( F("  + Push Button interrupt") );
       processPushButton();
-      s_pushButtonPressed = false;
     }
     if( s_ioExpanderInterrupt ) {
-      _println3( F("  + Expander interrupt") );
       s_ioExpanderInterrupt = false;
+      _println3( F("  + Expander interrupt") );
+#if USE_SLEEP
+      processMonitorTimer();
+#endif
     }
 
     timer.run();
@@ -633,23 +666,28 @@ void loop() {
     }
 
 #if !DIAG_STANDALONE && USE_SLEEP
-    
-    // flushing the serial uart does nothing if nothing was written, but ensures it gets
-    // out before sleeping if data was written.
-    Serial.flush();
-    // not sure about the best approach - keeping it open and flushing, or just opening/closing
-    // it each time an entry is written.
-    if( logfile )
-      logfile.flush();
-    // using 'idle' mode keeps the timers running, which I need since I don't currently
-    // have a real-time-clock. Once I have an RTC, I'll switch it.
-#if 0 && USE_RTC
-    sleep.adcMode();
-#else
-    sleep.idleMode();
-#endif
-    abortSleep = false;
-    sleep.sleepDelay( timeout, abortSleep );
+    if( s_pushButtonIntInstalled ) {
+      // flushing the serial uart does nothing if nothing was written, but ensures it gets
+      // out before sleeping if data was written.
+      Serial.flush();
+      // not sure about the best approach - keeping it open and flushing, or just opening/closing
+      // it each time an entry is written.
+      // actually, neither open/close nor flush. The flush actually does a sync which flushes, reads
+      // in the directory to update the file info, flushes out the directory and re-reads the current
+      // sector. Best to leave it open.
+      // if( logfile )
+      //  logfile.flush();
+      // using 'idle' mode keeps the timers running, which I need since I don't currently
+      // have a real-time-clock. Once I have an RTC, I'll switch it.
+      if( USE_RTC && rtcPresent )
+        sleep.adcMode();
+      else 
+        sleep.idleMode();
+
+      unsigned long timeout = 5000; // 
+      abortSleep = false;
+      sleep.sleepDelay( timeout, abortSleep );
+    }
 #endif
   }
 }

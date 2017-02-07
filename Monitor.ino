@@ -42,6 +42,19 @@ void BoolSignal::write( bool value, bool force ) {
   }
 }
 
+void BoolSignal::setLogChanges(bool enable) {
+  if( enable ) {
+    // if enabling logging, then force is current state to be logged.
+    logChanges = enable;
+    write( currentState, currentState );
+  }
+  else {
+    // if disabling logging, then force the signal to be logged as false.
+    write( false, false );
+    logChanges = enable;
+  }
+}
+
 struct zoneCallInfo {
     struct BoolSignal* zoneCallOut;
     struct BoolSignal* zoneValve;
@@ -249,18 +262,23 @@ void checkIoExpanderState() {
 
   if( ioExpPresent ) {
     // checking for errors only makes sense if the IO Expander is actually present.
-    unsigned int errorCount = ioExp0.errorCount();
-    if( errorCount > 0 ) {
+    unsigned int errorCountWr = ioExp0.errorCountWr();
+    unsigned int errorCountRd = ioExp0.errorCountRd();
+    if( errorCountWr > 0 || errorCountRd > 0 ) {
       if( logfile ) {      
         logfile.print( getCurrentTime() );
         logfile.print( F(",--:--:--,") );
-        logfile.print( F("Errors detected in ioExp communication ") );
-        logfile.println( errorCount );
+        logfile.print( F("Errors detected in ioExp communication,") );
+        logfile.print( errorCountWr );
+        logfile.print( F(",") );
+        logfile.println( errorCountRd );
       }
       _print3( getCurrentTime() );
       _print3( F(",--:--:--,") );
-      _print3( F("Errors detected in ioExp communication ") );
-      _println3( errorCount );
+      _print3( F("Errors detected in ioExp communication,") );
+      _print3( errorCountWr );
+      _print3( F(",") );
+      _println3( errorCountRd );
     }
 
     bool ioExpStateValid = ioExp0.verifyAll();

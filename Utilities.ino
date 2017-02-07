@@ -88,15 +88,14 @@ void writeLogEntry( struct BoolSignal& signal ) {
 
 void writeLogEntry( const char* signal, float value ) {
   if( logfile ) {      
-    // replace millis() with the real-time-clock when available.
-    logfile.print( s_currentCycleS);
-    logfile.print( F(",") );
+    logfile.print( getCurrentTime() );
+    logfile.print( F(",,") ); // no duration.
     logfile.print( signal );
     logfile.print( F(",") );
     logfile.println( value );
   }
-  _print3( s_currentCycleS );
-  _print3( F(",") );
+  _print3( getCurrentTime() );
+  _print3( F(",,") ); // no duration.
   _print3( signal );
   _print3( F(",") );
   _println3( value );
