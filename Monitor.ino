@@ -140,7 +140,8 @@ void readSignals() {
         ((digitalIoInputs & (1 << sig->pin)) != 0) ^ sig->activeLow;
       if( stateNow != sig->currentState ) {
         sig->currentState = stateNow;
-        writeLogEntry( *sig );
+        if( sig->logChanges )
+          writeLogEntry( *sig );
         sig->priorValid = true;
         sig->priorTransition = s_currentCycleS;
         anyInputsChanged = true;

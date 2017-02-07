@@ -27,21 +27,20 @@
 #define VERBOSITY 1
 #define USE_RTC 1
 #define USE_SLEEP 1
-#if !USE_SLEEP
-// the sleep library uses the WDT to periodically wake the processor from sleep states.
-#define USE_WDT 1
-#else
+#if USE_SLEEP
+// the sleep library uses the WDT to periodically wake the processor from sleep states,
+// so it is incompatible with actually using it as a watchdog.
 #define USE_WDT 0
+#else
+#define USE_WDT 1
 #endif
 
 #include "Verbosity.h"
 
 #include <SPI.h>
 #include <SD.h>
-#if USE_RTC
 #include <Wire.h>
 #include <RTClib.h>
-#endif
 #include <MCP23S17.h>
 #include <SimpleTimer.h>
 #if USE_SLEEP
@@ -99,7 +98,6 @@ bool abortSleep = false;
 SimpleTimer timer;
 
 bool sdCardPresent = false;
-char filename[] = "LOGGER00.CSV";
 File logfile;
 // Want to periodically sync the log file, which forces writing out the directory information,
 // in case of a loss-of-power. Otherwise, the directory entry indicates a zero length and you 
@@ -112,16 +110,20 @@ void syncLogFile() {
   }
 }
 
-#if USE_RTC
 bool rtcPresent = false;
 RTC_DS1307 rtc;
+DateTime bootTime;
 // this function is provided to the SD card in order to put real timestamps on the files.
 void myDateTimeCallback(uint16_t* date, uint16_t* time) {
-  DateTime now = rtc.now();
-  *date = FAT_DATE(now.year(), now.month(), now.day());
-  *time = FAT_TIME(now.hour(), now.minute(), now.second());
+  if( USE_RTC && rtcPresent ) {
+    DateTime now = rtc.now();
+    *date = FAT_DATE(now.year(), now.month(), now.day());
+    *time = FAT_TIME(now.hour(), now.minute(), now.second());
+  } else {
+    *date = FAT_DEFAULT_DATE;
+    *time = FAT_DEFAULT_TIME;
+  }
 }
-#endif
 
 bool ioExpPresent = false;
 MCP ioExp0( 0, ioExpCs );
@@ -130,21 +132,21 @@ uint16_t s_currentCycleS = 0;
 char s_currentCycleTime[22];  // DD-MMM-YYYY HH:MM:SS or HH:MM:SS
 
 void updateCurrentTime() {
-  unsigned long currentCycleS = (millis() / 1000);
-  s_currentCycleS = (uint16_t) currentCycleS;
+  if( USE_RTC && rtcPresent ) {
+    TimeSpan timeSinceBoot = rtc.now() - bootTime;
+    s_currentCycleS = timeSinceBoot.totalseconds();
+  } else {
+    unsigned long currentCycleS = (millis() / 1000);
+    s_currentCycleS = (uint16_t) currentCycleS;
+  }
   s_currentCycleTime[0] = 0;
 }
 char* getCurrentTime() {
   if( s_currentCycleTime[0] == 0 ) {
-#if USE_RTC
-    if( rtcPresent )
+    if( USE_RTC && rtcPresent )
       generateDateTimeRTC( s_currentCycleTime );
     else
-#endif
-    {
-      unsigned long currentCycleS = (millis() / 1000);
-      generateHMS( s_currentCycleTime, currentCycleS );
-    }
+      generateHMS( s_currentCycleTime, s_currentCycleS );
   }
   return( s_currentCycleTime );
 }
@@ -431,7 +433,8 @@ void setup() {
   rtc.writenvram( 0, origData );
   rtcPresent = (readData == (origData ^ 0xff));
   if( rtcPresent ) {
-     SdFile::dateTimeCallback( myDateTimeCallback );
+    bootTime = rtc.now();
+    SdFile::dateTimeCallback( myDateTimeCallback );
   }
 #endif
 
@@ -496,6 +499,7 @@ void setup() {
   // the IO expander.
   timer.setInterval( SECONDStoMS(1), processMonitorTimer );
 #endif
+  processMonitorTimer();
 }
 
 void processPushButton() {
@@ -578,6 +582,8 @@ void processActiveStateChange() {
 
     // create a new file
     if( sdCardPresent ) {
+      char filename[13]; // bbbbbbbb.eeen
+      generateBaseFilename(filename);
       for (uint8_t i = 0; i < 100; i++) {
         filename[6] = i/10 + '0';
         filename[7] = i%10 + '0';

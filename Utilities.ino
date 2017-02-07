@@ -10,7 +10,6 @@ char* generateUint( char* buffer, uint16_t num, uint8_t digits ) {
 void generateDateTimeRTC( char* buffer ) {
 #if USE_RTC
   DateTime now = rtc.now();
-  uint8_t i = 0;
   buffer = generateUint( buffer, now.year(), 4 );
   *buffer++ = '/';
   buffer = generateUint( buffer, now.month(), 2 );
@@ -24,6 +23,24 @@ void generateDateTimeRTC( char* buffer ) {
   buffer = generateUint( buffer, now.second(), 2 );
   *buffer++ = 0;
 #endif
+}
+
+void generateBaseFilename( char* buffer ) {
+  static const char defaultBasename[] PROGMEM = "LOGGER";
+  static const char extension[] PROGMEM = "xx.csv"; 
+  if( USE_RTC && rtcPresent ) {
+    DateTime now = rtc.now();
+    buffer = generateUint( buffer, now.year(), 2 );
+    buffer = generateUint( buffer, now.month(), 2 );
+    buffer = generateUint( buffer, now.day(), 2 );
+    *buffer = 0;
+  }
+  else
+  {
+    strcpy_P( buffer, defaultBasename );
+    buffer += strlen(buffer);
+  }
+  strcpy_P( buffer, extension );
 }
 
 void generateHMS( char* buffer, unsigned long seconds ) {
