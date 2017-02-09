@@ -6,30 +6,30 @@
 // Keep these levels in mind when adding new statements. Always use one of the _printN and _printlnN 
 // variants rather than calling Serial.print[ln]() directly.
 #if VERBOSITY >= 1
-#define _print1(x) Serial.print(x)
-#define _println1(x) Serial.println(x)
+#define _print1(...) Serial.print(__VA_ARGS__)
+#define _println1(...) Serial.println(__VA_ARGS__)
 #else
-#define _print1(x)
-#define _println1(x)
+#define _print1(...)
+#define _println1(...)
 #endif
 #if VERBOSITY >= 2
-#define _print2(x) Serial.print(x)
-#define _println2(x) Serial.println(x)
+#define _print2(...) Serial.print(__VA_ARGS__)
+#define _println2(...) Serial.println(__VA_ARGS__)
 #else
-#define _print2(x)
-#define _println2(x)
+#define _print2(...)
+#define _println2(...)
 #endif
 #if VERBOSITY >= 3
-#define _print3(x) Serial.print(x)
-#define _println3(x) Serial.println(x)
+#define _print3(...) Serial.print(__VA_ARGS__)
+#define _println3(...) Serial.println(__VA_ARGS__)
 #else
-#define _print3(x)
-#define _println3(x)
+#define _print3(...)
+#define _println3(...)
 #endif
 #if VERBOSITY >= 4
-#define _print4(x) Serial.print(x)
-#define _println4(x) Serial.println(x)
+#define _print4(...) Serial.print(__VA_ARGS__)
+#define _println4(...) Serial.println(__VA_ARGS__)
 #else
-#define _print4(x)
-#define _println4(x)
+#define _print4(...)
+#define _println4(...)
 #endif

@@ -2,7 +2,7 @@
 void BoolSignal::init() {
   switch( source ) {
   case eDigitalIo:
-    _print3( F("setting Digital ") ); _print3( pin ); _print3( F(" to ") ); _println3( type );
+    _print4( F("setting Digital ") ); _print4( pin ); _print4( F(" to ") ); _println4( type );
     pinMode( pin, type );
     if( type == OUTPUT )
       digitalWrite( pin, activeLow ? HIGH : LOW );
@@ -293,8 +293,15 @@ void checkIoExpanderState() {
   }
 }
 
+// This is the function that performs the bulk of our processing, reading inputs and 
+// determining a new state for the outputs. It gets called from the main loop each
+// time an IO Expander interrupt occurs.
 void processMonitorTimer() {
-  
+
+#if !USE_SLEEP
+  updateCurrentTime();
+#endif
+
   // _println3( digitalRead( pushButton.pin ) == HIGH ? F("HIGH") : F("LOW") );
   // pinMode( pushButton.pin, INPUT_PULLUP );
 

@@ -1,5 +1,6 @@
-#define VERSION "1.8"
+#define VERSION "1.9"
 
+// VERSION 1.9 - use of avr/sleep.h. USE_SLEEP works with DIAG_STANDALONE.
 // VERSION 1.8 - refinements of sleep, watchdog, etc.
 // VERSION 1.7 - completion of RTC usage. Ready for Winter 2016-2017.
 // VERSION 1.6 - addition (for real) of the RTC and logging of real-time.
@@ -23,8 +24,8 @@
 // DIAG_STANDALONE runs the system through a test script in which the input signals are prescribed.
 // To get it to match the ReferenceLog.csv, CALLS_ACTIVE_LOW needs to be true (the default) and USE_RTC
 // needs to be 0 (so the times are consistent).
-#define DIAG_STANDALONE 1
-#define VERBOSITY 3
+#define DIAG_STANDALONE 0
+#define VERBOSITY 1
 #define USE_RTC 1
 // running standalone is incompatible with sleeping because it relies on the internal timers running.
 // #define USE_SLEEP (!DIAG_STANDALONE && 1)
@@ -41,10 +42,11 @@
 #include <RTClib.h>
 #include <MCP23S17.h>
 #include <SimpleTimer.h>
-#if USE_SLEEP
-#include <Sleep_n0m1.h>
-#endif
 #include <EEPROM.h>
+#if USE_SLEEP
+#include <avr/interrupt.h>
+#include <avr/sleep.h>
+#endif
 #include <avr/pgmspace.h>
 #include <avr/wdt.h>
 
@@ -88,11 +90,6 @@
 
 #define tempPin A0
 
-#if USE_SLEEP
-Sleep sleep;
-bool abortSleep = false;
-#endif
-
 SimpleTimer timer;
 
 bool sdCardPresent = false;
@@ -124,15 +121,14 @@ MCP ioExp0( 0, ioExpCs );
 unsigned long s_currentTimeS = 0;
 #define s_currentCycleS ((uint16_t) s_currentTimeS)
 char s_currentCycleTime[22];  // DD-MMM-YYYY HH:MM:SS or HH:MM:SS
-
 void updateCurrentTime() {
   if( USE_RTC && rtcPresent ) {
     TimeSpan timeSinceBoot = rtc.now() - bootTime;
     s_currentTimeS = timeSinceBoot.totalseconds();
-    Serial.println(s_currentTimeS);
   } else {
     // due to the divide, this will produce a discontinuity in the time values when millis()
-    // wraps around, approximately every 49 days.
+    // wraps around, approximately every 49 days. Since the purpose of the RTC is to address
+    // this, I'm ok with it here.
     s_currentTimeS = (millis() / 1000);
   }
   s_currentCycleTime[0] = 0;
@@ -170,6 +166,11 @@ void watchdogResetFunc() {
   wdt_reset();
 }
 #endif
+volatile bool s_wdtFired = false;
+ISR(WDT_vect) {
+  wdt_disable();
+  s_wdtFired = true;
+}
 
 enum Source { eNone, eDigitalIo, eAnalogIo, eIoExpander };
 struct BoolSignal {
@@ -367,17 +368,11 @@ void switchHandler() {
   s_pushButtonPressed = true;
   detachInterrupt(digitalPinToInterrupt( pushButton.pin ));
   s_pushButtonIntInstalled = false;
-#if USE_SLEEP
-  abortSleep = true;
-#endif
 }
 bool s_ioExpanderInterrupt = false;
 void ioExpHandler() {
   ioExp0.wordRead(INTCAPA);
   s_ioExpanderInterrupt = true;
-#if USE_SLEEP
-  abortSleep = true;
-#endif
 }
 
 uint8_t s_ledTimer = -1;
@@ -414,6 +409,15 @@ void ledTimerExpired() {
 void setup() {
   Serial.begin(115200);
 
+  // Not (currently) using the ADC, so turn it off.
+  _print4(F("ADCSRA started as 0x")); _println4(ADCSRA, HEX);
+  ADCSRA = 0;
+  // Turn off power to peripherals that we are not using. TWI is used for RTC, Timer0 for millis,
+  // SPI used for IO Expander and SD card, and USART0 for Serial.
+  _print4(F("PRR started as 0x")); _println4(PRR, HEX);
+  PRR = _BV(PRTIM2) | _BV(PRTIM1) | _BV(PRADC);
+  _print4(F("CLKPR is 0x")); _println4(CLKPR, HEX);
+  
 #if DIAG_STANDALONE
   timer.setTimeout( 1000, processTestScript );
 #endif
@@ -426,11 +430,11 @@ void setup() {
   // is actually present.
   rtc.begin();
   uint8_t origData = rtc.readnvram( 0 );
-  _print3( "origData " ); _println3( origData );
+  _print4( "origData " ); _println4( origData );
   rtc.writenvram( 0, origData ^ 0xff );
-  _print3( "wroteData " ); _println3( origData ^ 0xff );
+  _print4( "wroteData " ); _println4( origData ^ 0xff );
   uint8_t readData = rtc.readnvram( 0 );
-  _print3( "readData " ); _println3( readData );
+  _print4( "readData " ); _println4( readData );
   rtc.writenvram( 0, origData );
   rtcPresent = (readData == (origData ^ 0xff));
   if( rtcPresent ) {
@@ -495,12 +499,12 @@ void setup() {
 #endif
 
 #if !USE_SLEEP
-  // This is the function that performs the bulk of our processing, reading inputs and 
-  // determining a new state for the outputs. If we are not using sleep, then we run it
-  // once a second on a timer. If using sleep, then it gets called on each interrupt from
-  // the IO expander.
-  timer.setInterval( SECONDStoMS(1), processMonitorTimer );
+  // When not using sleep, we periodically want to update our 'course' time. During sleep, this 
+  // is done each time we wake up. But without sleep, this would otherwise run constantly.
+  timer.setInterval( SECONDStoMS(1), updateCurrentTime );
 #endif
+
+  // Run the monitor for the first time to establish the current state of all signals.
   processMonitorTimer();
 }
 
@@ -640,15 +644,13 @@ void loop() {
 
     if( s_pushButtonPressed ) {
       s_pushButtonPressed = false;
-      _println3( F("  + Push Button interrupt") );
+      _println4( F("  + Push Button interrupt") );
       processPushButton();
     }
     if( s_ioExpanderInterrupt ) {
       s_ioExpanderInterrupt = false;
-      _println3( F("  + Expander interrupt") );
-#if USE_SLEEP
+      _println4( F("  + Expander interrupt") );
       processMonitorTimer();
-#endif
     }
 
     timer.run();
@@ -683,43 +685,68 @@ void loop() {
       ledTimerExpired(); // run the first time immediately.
     }
     
+#if USE_SLEEP
     // flushing the serial uart does nothing if nothing was written, but ensures it gets
     // out before sleeping if data was written.
     Serial.flush();
 
-#if USE_SLEEP
     // using 'idle' mode keeps the timers running, which I need since I don't currently
     // have a real-time-clock. Once I have an RTC, I'll switch it.
-    unsigned long timeout;
+    uint16_t timeout;
     uint8_t fineTimers = timer.getNumEnabledTimers( false );
-    static bool idleMode = false;
     if( rtcPresent && fineTimers == 0 ) {
-      if( idleMode ) {
-        _println3(F("  + using ADC mode (no timer clocks)"));
-        Serial.flush();
-      }
-      idleMode = false;
-      sleep.adcMode();
-      timeout = 8000;
+      set_sleep_mode(SLEEP_MODE_STANDBY); // not using ADC, so this is better.
+      timeout = timer.getDelayTillNext(true);
+      // Since we want to convert to milliseconds, use maximum if we will overflow.
+      timeout = (timeout >= 0x40 ? 0xffff : timeout * 1024);
     }
     else {
-      if( !idleMode ) {
-        _println3(F("  + using Idle mode (timer clocks)"));
-        Serial.flush();
-      }
-      idleMode = true;
-      sleep.idleMode();
+      set_sleep_mode(SLEEP_MODE_IDLE);
       timeout = timer.getDelayTillNext(false);
-      if( timeout > 1000 )
-        timeout = 1000;
-      timeout += 20; // for some margin since the wdt is not very accurate.
     }
 
-    if( !s_pushButtonPressed && !s_ioExpanderInterrupt ) {
-      abortSleep = false;
-      sleep.sleepDelay( timeout, abortSleep );
-      updateCurrentTime();
+    // Find the longest watchdog delay that is less than the desired timout. 
+    // Longest time is really 8192, but 8000 looks better and makes it more likely that we will
+    // sleep a bit longer then requested so it is actually triggered when we wake up.
+    uint8_t wdTimeoutReg = WDTO_8S;
+    uint16_t wdTimeoutMs = 8000; 
+    while( wdTimeoutReg > WDTO_15MS && wdTimeoutMs > timeout ) {
+      wdTimeoutMs /= 2;
+      wdTimeoutReg -= 1;
     }
+    
+    cli();
+    if( !s_pushButtonPressed && !s_ioExpanderInterrupt ) {
+      s_wdtFired = false;
+      // Can't use wdt_enable because it clears the WDIE (interrupt enable) bit which we require 
+      // for our ISR to be called. This routine is copied from wdt.h/wdt_enable with the WDIE bit
+      // enabled and the SREG manipulations removed because I know I'm already in a cli()/sei() pair.
+      __asm__ __volatile__ (
+          "wdr" "\n\t"
+          "sts %0, %1" "\n\t"
+          "sts %0, %2" "\n \t"
+          : /* no outputs */
+          : "n" (_SFR_MEM_ADDR(_WD_CONTROL_REG)),
+          "r" ((uint8_t)(_BV(_WD_CHANGE_BIT) | _BV(WDIE) | _BV(WDE))),
+          "r" ((uint8_t) ((wdTimeoutReg & 0x08 ? _WD_PS3_MASK : 0x00) | _BV(WDIE) | _BV(WDE) | (wdTimeoutReg & 0x07)) )
+      );
+      sleep_enable();
+      // Why the while loop? Because SLEEP_MODE_IDLE is woken by (among other thnigs) the Timer0 and USART interrupts.
+      // So in the absence of the while loop, this block will exit in rather short order. And don't want to disable them
+      // since running the timers is the whole point of using IDLE mode.
+      while( !s_pushButtonPressed && !s_ioExpanderInterrupt && !s_wdtFired ) {
+        sleep_bod_disable();
+        sei();
+        sleep_cpu();
+        cli();
+      }
+      sleep_disable();
+      // In case we exited due to one of our interrupts. 
+      wdt_disable();
+    }
+    sei();
+
+    updateCurrentTime();
 #endif
   }
 }
