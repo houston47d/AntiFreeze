@@ -124,12 +124,14 @@ void processTestScript() {
   do {
     uint16_t toggle = pgm_read_word_near( &testScript[testScriptIndex].digital );
     s_digitalIo = s_digitalIo ^ toggle;
+    if( (s_digitalIo & 0x0004) == 0 ) // on real hardware, interrupt occurs when button pressed.
+      s_pushButtonPressed = true;
     if( (toggle & 0x8000) != 0 )
       seconds = true;
     toggle = pgm_read_word_near( &testScript[testScriptIndex].ioexp );
     s_ioExp = s_ioExp ^ toggle;
-    if( (s_digitalIo & 0x0004) == 0 )
-      s_pushButtonPressed = true;
+    if( toggle != 0 ) // on real hardware, interrupt occurs on any change in inputs.
+      s_ioExpanderInterrupt = true;
       
     ++testScriptIndex;
     if( testScriptIndex >= sizeof( testScript ) / sizeof( testScript[0] ) )
@@ -137,6 +139,10 @@ void processTestScript() {
     delay = pgm_read_word_near( &testScript[testScriptIndex].delay );
     // delay |= (unsigned long) pgm_read_word_near( ((uint16_t*) &testScript[testScriptIndex].delay) + 1 ) << 16;
   } while( delay == 0 );
+  if( delay >= 4000 ) {
+    delay /= 1000;
+    seconds = true;
+  }
   timer.setTimeout( delay, processTestScript, seconds );
 }
 #endif

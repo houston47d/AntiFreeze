@@ -294,8 +294,6 @@ void checkIoExpanderState() {
 }
 
 void processMonitorTimer() {
-
-  updateCurrentTime();
   
   // _println3( digitalRead( pushButton.pin ) == HIGH ? F("HIGH") : F("LOW") );
   // pinMode( pushButton.pin, INPUT_PULLUP );

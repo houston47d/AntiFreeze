@@ -117,27 +117,31 @@ void myDateTimeCallback(uint16_t* date, uint16_t* time) {
   *date = FAT_DATE(now.year(), now.month(), now.day());
   *time = FAT_TIME(now.hour(), now.minute(), now.second());
 }
-// This is only installed if rtcPresent, so not tested here again.
-unsigned long myCourseTimerFunc() {
-  TimeSpan timeSinceBoot = rtc.now() - bootTime;
-  return( timeSinceBoot.totalseconds() );
-}
 
 bool ioExpPresent = false;
 MCP ioExp0( 0, ioExpCs );
 
-uint16_t s_currentCycleS = 0;
+unsigned long s_currentTimeS = 0;
+#define s_currentCycleS ((uint16_t) s_currentTimeS)
 char s_currentCycleTime[22];  // DD-MMM-YYYY HH:MM:SS or HH:MM:SS
 
 void updateCurrentTime() {
   if( USE_RTC && rtcPresent ) {
     TimeSpan timeSinceBoot = rtc.now() - bootTime;
-    s_currentCycleS = timeSinceBoot.totalseconds();
+    s_currentTimeS = timeSinceBoot.totalseconds();
+    Serial.println(s_currentTimeS);
   } else {
-    unsigned long currentCycleS = (millis() / 1000);
-    s_currentCycleS = (uint16_t) currentCycleS;
+    // due to the divide, this will produce a discontinuity in the time values when millis()
+    // wraps around, approximately every 49 days.
+    s_currentTimeS = (millis() / 1000);
   }
   s_currentCycleTime[0] = 0;
+}
+// This is only installed if rtcPresent, so not tested here again.
+unsigned long myCourseTimerFunc() {
+  // TimeSpan timeSinceBoot = rtc.now() - bootTime;
+  // return( timeSinceBoot.totalseconds() );
+  return( s_currentTimeS );
 }
 char* getCurrentTime() {
   if( s_currentCycleTime[0] == 0 ) {
@@ -490,7 +494,7 @@ void setup() {
   wdt_enable( WDTO_2S );
 #endif
 
-#if !USE_SLEEP || DIAG_STANDALONE
+#if !USE_SLEEP
   // This is the function that performs the bulk of our processing, reading inputs and 
   // determining a new state for the outputs. If we are not using sleep, then we run it
   // once a second on a timer. If using sleep, then it gets called on each interrupt from
@@ -642,7 +646,7 @@ void loop() {
     if( s_ioExpanderInterrupt ) {
       s_ioExpanderInterrupt = false;
       _println3( F("  + Expander interrupt") );
-#if USE_SLEEP && !DIAG_STANDALONE
+#if USE_SLEEP
       processMonitorTimer();
 #endif
     }
@@ -690,15 +694,19 @@ void loop() {
     uint8_t fineTimers = timer.getNumEnabledTimers( false );
     static bool idleMode = false;
     if( rtcPresent && fineTimers == 0 ) {
-      if( idleMode )
+      if( idleMode ) {
         _println3(F("  + using ADC mode (no timer clocks)"));
+        Serial.flush();
+      }
       idleMode = false;
       sleep.adcMode();
       timeout = 8000;
     }
     else {
-      if( !idleMode )
+      if( !idleMode ) {
         _println3(F("  + using Idle mode (timer clocks)"));
+        Serial.flush();
+      }
       idleMode = true;
       sleep.idleMode();
       timeout = timer.getDelayTillNext(false);
@@ -710,6 +718,7 @@ void loop() {
     if( !s_pushButtonPressed && !s_ioExpanderInterrupt ) {
       abortSleep = false;
       sleep.sleepDelay( timeout, abortSleep );
+      updateCurrentTime();
     }
 #endif
   }
