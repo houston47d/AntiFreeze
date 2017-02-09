@@ -23,17 +23,15 @@
 // DIAG_STANDALONE runs the system through a test script in which the input signals are prescribed.
 // To get it to match the ReferenceLog.csv, CALLS_ACTIVE_LOW needs to be true (the default) and USE_RTC
 // needs to be 0 (so the times are consistent).
-#define DIAG_STANDALONE 0
-#define VERBOSITY 1
+#define DIAG_STANDALONE 1
+#define VERBOSITY 3
 #define USE_RTC 1
+// running standalone is incompatible with sleeping because it relies on the internal timers running.
+// #define USE_SLEEP (!DIAG_STANDALONE && 1)
 #define USE_SLEEP 1
-#if USE_SLEEP
 // the sleep library uses the WDT to periodically wake the processor from sleep states,
 // so it is incompatible with actually using it as a watchdog.
-#define USE_WDT 0
-#else
-#define USE_WDT 1
-#endif
+#define USE_WDT (!USE_SLEEP && 1)
 
 #include "Verbosity.h"
 
@@ -115,14 +113,14 @@ RTC_DS1307 rtc;
 DateTime bootTime;
 // this function is provided to the SD card in order to put real timestamps on the files.
 void myDateTimeCallback(uint16_t* date, uint16_t* time) {
-  if( USE_RTC && rtcPresent ) {
-    DateTime now = rtc.now();
-    *date = FAT_DATE(now.year(), now.month(), now.day());
-    *time = FAT_TIME(now.hour(), now.minute(), now.second());
-  } else {
-    *date = FAT_DEFAULT_DATE;
-    *time = FAT_DEFAULT_TIME;
-  }
+  DateTime now = rtc.now();
+  *date = FAT_DATE(now.year(), now.month(), now.day());
+  *time = FAT_TIME(now.hour(), now.minute(), now.second());
+}
+// This is only installed if rtcPresent, so not tested here again.
+unsigned long myCourseTimerFunc() {
+  TimeSpan timeSinceBoot = rtc.now() - bootTime;
+  return( timeSinceBoot.totalseconds() );
 }
 
 bool ioExpPresent = false;
@@ -152,8 +150,8 @@ char* getCurrentTime() {
 }
 
 #if DIAG_STANDALONE
-uint16_t s_digitalIo = -1;
-uint16_t s_ioExp = 0;
+volatile uint16_t s_digitalIo = -1;
+volatile uint16_t s_ioExp = 0;
 #endif
 
 #define EEPROM_ADDR_SIG 0x000
@@ -359,8 +357,8 @@ void showCapabilities() {
   }
 }
 
-bool s_pushButtonPressed = false;
-bool s_pushButtonIntInstalled = false;
+volatile bool s_pushButtonPressed = false;
+volatile bool s_pushButtonIntInstalled = false;
 void switchHandler() {
   s_pushButtonPressed = true;
   detachInterrupt(digitalPinToInterrupt( pushButton.pin ));
@@ -379,33 +377,33 @@ void ioExpHandler() {
 }
 
 uint8_t s_ledTimer = -1;
-uint8_t s_ledCounter = 0;
 void ledTimerExpired() {
-  ++s_ledCounter;
-  // _println3(s_ledCounter);
+  uint8_t remaining = timer.remaining( s_ledTimer );
+  
   bool greenState = false;
-  // Let's set the red if either the IO expander is not present or the logfile couldn't be opened.
-  bool redState = !ioExpPresent || active.currentState && !logfile;
-  if( active.currentState ) {
-    if( activeAF.currentState ) {
-      // if purge + antifreeze, then fast flash.
-      greenState = (s_ledCounter & 0x1) != 0;
-    }
-    else if( activePrg.currentState ) {
-      // if purge, then slow flash.
-      greenState = (s_ledCounter & 0x2) != 0;
-    }
-    else
-      // if monitoring only, solid green.
-      greenState = true;
+  bool redState = false;
+  if( remaining == 0 ) {
+    // turn both LEDs off.
+    s_ledTimer = -1; // we will be deleted
   }
   else {
-    greenState = false;
+    // Let's set the red if either the IO expander is not present or the logfile couldn't be opened.
+    redState = !ioExpPresent || active.currentState && !logfile;
+    if( active.currentState ) {
+      if( activeAF.currentState ) {
+        // if purge + antifreeze, then fast flash.
+        greenState = (remaining & 0x1) != 0;
+      }
+      else if( activePrg.currentState ) {
+        // if purge, then slow flash.
+        greenState = (remaining & 0x2) != 0;
+      }
+      else
+        // if monitoring only, solid green.
+        greenState = true;
+    }
   }
-
-  pinMode( greenLed.pin, OUTPUT );
   greenLed.write( greenState );
-  pinMode( redLed.pin, OUTPUT );
   redLed.write( redState );
 }
 
@@ -415,7 +413,6 @@ void setup() {
 #if DIAG_STANDALONE
   timer.setTimeout( 1000, processTestScript );
 #endif
-  s_ledTimer = timer.setInterval( 500, ledTimerExpired );
 
   SPI.begin();
   SPI.setClockDivider(SPI_CLOCK_DIV16);
@@ -435,6 +432,7 @@ void setup() {
   if( rtcPresent ) {
     bootTime = rtc.now();
     SdFile::dateTimeCallback( myDateTimeCallback );
+    timer.setCourseTimeCallback( myCourseTimerFunc );
   }
 #endif
 
@@ -492,7 +490,7 @@ void setup() {
   wdt_enable( WDTO_2S );
 #endif
 
-#if !USE_SLEEP
+#if !USE_SLEEP || DIAG_STANDALONE
   // This is the function that performs the bulk of our processing, reading inputs and 
   // determining a new state for the outputs. If we are not using sleep, then we run it
   // once a second on a timer. If using sleep, then it gets called on each interrupt from
@@ -644,16 +642,18 @@ void loop() {
     if( s_ioExpanderInterrupt ) {
       s_ioExpanderInterrupt = false;
       _println3( F("  + Expander interrupt") );
-#if USE_SLEEP
+#if USE_SLEEP && !DIAG_STANDALONE
       processMonitorTimer();
 #endif
     }
 
     timer.run();
-   
+
+    bool someStateChanged = false;
     if( wasActive != active.currentState ) {
       processActiveStateChange();
       wasActive = active.currentState;
+      someStateChanged = true;
 
       _println3( F("  + Updating current state in EEPROM (1)") );
       EEPROM.update( EEPROM_ADDR_SIG, EEPROM_SIG );
@@ -665,32 +665,49 @@ void loop() {
       activeChanged( active.currentState, activePrg.currentState, activeAF.currentState );
       wasActivePrg = activePrg.currentState;
       wasActiveAF = activeAF.currentState;
+      someStateChanged = true;
 
       _println3( F("  + Updating current state in EEPROM (2)") );
       EEPROM.update( EEPROM_ADDR_PURGE, activePrg.currentState );  
       EEPROM.update( EEPROM_ADDR_ANTIFREEZE, activeAF.currentState );  
     }
 
-#if !DIAG_STANDALONE && USE_SLEEP
-    if( s_pushButtonIntInstalled ) {
-      // flushing the serial uart does nothing if nothing was written, but ensures it gets
-      // out before sleeping if data was written.
-      Serial.flush();
-      // not sure about the best approach - keeping it open and flushing, or just opening/closing
-      // it each time an entry is written.
-      // actually, neither open/close nor flush. The flush actually does a sync which flushes, reads
-      // in the directory to update the file info, flushes out the directory and re-reads the current
-      // sector. Best to leave it open.
-      // if( logfile )
-      //  logfile.flush();
-      // using 'idle' mode keeps the timers running, which I need since I don't currently
-      // have a real-time-clock. Once I have an RTC, I'll switch it.
-      if( USE_RTC && rtcPresent )
-        sleep.adcMode();
-      else 
-        sleep.idleMode();
+    if( someStateChanged ) {
+      if( s_ledTimer >= 0 )
+        timer.deleteTimer( s_ledTimer );
+      s_ledTimer = timer.setTimer( 500, ledTimerExpired, 20 );
+      ledTimerExpired(); // run the first time immediately.
+    }
+    
+    // flushing the serial uart does nothing if nothing was written, but ensures it gets
+    // out before sleeping if data was written.
+    Serial.flush();
 
-      unsigned long timeout = 5000; // 
+#if USE_SLEEP
+    // using 'idle' mode keeps the timers running, which I need since I don't currently
+    // have a real-time-clock. Once I have an RTC, I'll switch it.
+    unsigned long timeout;
+    uint8_t fineTimers = timer.getNumEnabledTimers( false );
+    static bool idleMode = false;
+    if( rtcPresent && fineTimers == 0 ) {
+      if( idleMode )
+        _println3(F("  + using ADC mode (no timer clocks)"));
+      idleMode = false;
+      sleep.adcMode();
+      timeout = 8000;
+    }
+    else {
+      if( !idleMode )
+        _println3(F("  + using Idle mode (timer clocks)"));
+      idleMode = true;
+      sleep.idleMode();
+      timeout = timer.getDelayTillNext(false);
+      if( timeout > 1000 )
+        timeout = 1000;
+      timeout += 20; // for some margin since the wdt is not very accurate.
+    }
+
+    if( !s_pushButtonPressed && !s_ioExpanderInterrupt ) {
       abortSleep = false;
       sleep.sleepDelay( timeout, abortSleep );
     }
