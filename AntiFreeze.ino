@@ -57,31 +57,30 @@
 #define ioExpInt 3
 
 #define SECONDStoMS(s) ((s)*1000U)
-#define MINUTEStoMS(m) ((m)*60*1000U)
 #define MINUTEStoS(m)  ((m)*60U)
 #define HOURStoS(h)    ((h)*3600U)
 
 #if DIAG_STANDALONE
-#define callOutputDurationMs SECONDStoMS(2)
-#define callOutputToValveTimeoutMs MINUTEStoMS(5)
-#define zone2callOutputDurationMs SECONDStoMS(10)
+#define callOutputDurationS 2
+#define callOutputToValveTimeoutS MINUTEStoS(5)
+#define zone2callOutputDurationS 10
 #define zone2CallIntervalMinS 30
 #define zone2CallIntervalMaxS 45
 #else
-// callOutputDurationMs - how long to assert a call output after the corresponding valve has
+// callOutputDurationS - how long to assert a call output after the corresponding valve has
 // opened.
-#define callOutputDurationMs SECONDStoMS(2)
-// callOutputToValveTimeoutMs - how long to wait for the corresponding valve to open after
+#define callOutputDurationS 2
+// callOutputToValveTimeoutS - how long to wait for the corresponding valve to open after
 // asserting the call output. Set to cover the case of a cold furnace having to heat up to 
 // service the call.
-#define callOutputToValveTimeoutMs MINUTEStoMS(5)
-// zone2callOutputDurationMs - how long to assert the call after the valve opens for zone 2,
+#define callOutputToValveTimeoutS MINUTEStoS(5)
+// zone2callOutputDurationS - how long to assert the call after the valve opens for zone 2,
 // as the purpose in this case is to get hot water all the way through the loop.
 // zone2CallIntervalMinS - time after which to start cycle zone 2 if the furnace is already
 // servicing another zone.
 // zone2CallIntervalMaxS - time after which to start cycle zone 2 even if the furnace is not
 // servicing another zone (means we will trigger the burner, but oh well).
-#define zone2callOutputDurationMs MINUTEStoMS(1)
+#define zone2callOutputDurationS MINUTEStoS(1)
 #define zone2CallIntervalMinS MINUTEStoS(60)
 #define zone2CallIntervalMaxS HOURStoS(6)
 // #define zone2CallIntervalMinS MINUTEStoS(30)
@@ -215,7 +214,7 @@ BoolSignal zone1Active( eNone, 0, 0, zone1ActiveName, false, false );
 
 // The pushbutton is between the pin and GND, so LOW means the button was pushed.
 static const char pushButtonName[] PROGMEM = { "PushButton" };
-BoolSignal pushButton( eDigitalIo, 2, INPUT_PULLUP, pushButtonName, true, false );
+BoolSignal pushButton( eDigitalIo, 2, INPUT_PULLUP, pushButtonName, true, true );
 // The two LEDs are tied to +V through a resistor, so 'on' is LOW (and thus activeLow = true).
 static const char greenLedName[] PROGMEM = { "GreenLed" };
 BoolSignal greenLed( eDigitalIo, A2, OUTPUT, greenLedName, true, false );
@@ -375,7 +374,7 @@ void ioExpHandler() {
   s_ioExpanderInterrupt = true;
 }
 
-uint8_t s_ledTimer = -1;
+int8_t s_ledTimer = -1;
 void ledTimerExpired() {
   uint8_t remaining = timer.remaining( s_ledTimer );
   
@@ -679,8 +678,7 @@ void loop() {
     }
 
     if( someStateChanged ) {
-      if( s_ledTimer >= 0 )
-        timer.deleteTimer( s_ledTimer );
+      timer.cleanupTimer( s_ledTimer );
       s_ledTimer = timer.setTimer( 500, ledTimerExpired, 20 );
       ledTimerExpired(); // run the first time immediately.
     }

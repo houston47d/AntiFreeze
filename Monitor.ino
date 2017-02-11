@@ -58,9 +58,9 @@ void BoolSignal::setLogChanges(bool enable) {
 struct zoneCallInfo {
     struct BoolSignal* zoneCallOut;
     struct BoolSignal* zoneValve;
-    int waitForValveTimer;
-    int holdTimer;
-    uint16_t holdDurationMs;
+    int8_t waitForValveTimer;
+    int8_t holdTimer;
+    uint16_t holdDurationS;
     bool active() const { return( waitForValveTimer >= 0 || holdTimer >= 0 ); }
 };
 
@@ -68,20 +68,19 @@ void zoneCallWaitForValveTimout( void* param ) {
   struct zoneCallInfo* info( reinterpret_cast<struct zoneCallInfo*>( param ) );
   info->zoneCallOut->write( false );
   writeLogEntry( F("Error: expected zone X valve, but never detected") );
-  info->waitForValveTimer = -1;
+  info->waitForValveTimer = -1; // timer will be deleted.
 }
 void zoneCallExpired( void* param ) {
   struct zoneCallInfo* info( reinterpret_cast<struct zoneCallInfo*>( param ) );
   _println3( F("  + zone X call expired") );
   info->zoneCallOut->write( false );
-  info->holdTimer = -1;
+  info->holdTimer = -1; // timer will be deleted.
 }
 void setupZoneCallOut( struct zoneCallInfo& info ) {
   _println3( F("  + triggering zone X") );
   info.zoneCallOut->write( true );
-  if( info.waitForValveTimer >= 0 ) // should never happen...
-    timer.deleteTimer( info.waitForValveTimer );
-  info.waitForValveTimer = timer.setTimeout( callOutputToValveTimeoutMs, zoneCallWaitForValveTimout, &info, false );
+  timer.cleanupTimer( info.waitForValveTimer ); // should never happen...
+  info.waitForValveTimer = timer.setTimeout( callOutputToValveTimeoutS, zoneCallWaitForValveTimout, &info, true );
   if( info.waitForValveTimer == -1 ) {
     writeLogEntry( F("Error: failed call to setTimeout (1)") );
   }
@@ -91,11 +90,9 @@ void checkForValveOpen( struct zoneCallInfo& info ) {
     // we generated a call on zone 1 and the valve has now come on, so we set a new timer
     // for the duration that we want it open.
     _println3( F("  + zone X valve is now open") );
-    timer.deleteTimer( info.waitForValveTimer );
-    info.waitForValveTimer = -1;
-    if( info.holdTimer >= 0 ) // should never happen...
-      timer.deleteTimer( info.holdTimer );
-    info.holdTimer = timer.setTimeout( info.holdDurationMs, zoneCallExpired, &info, false );
+    timer.cleanupTimer( info.waitForValveTimer );
+    timer.cleanupTimer( info.holdTimer ); // should never happen...
+    info.holdTimer = timer.setTimeout( info.holdDurationS, zoneCallExpired, &info, true );
     if( info.holdTimer == -1 ) {
       writeLogEntry( F("Error: failed call to setTimeout (2)") );
     }
@@ -111,8 +108,8 @@ void cancelZoneCallOut( struct zoneCallInfo& info ) {
   info.zoneCallOut->write( false );
 }
 struct zoneCallInfo s_zoneCallOut[] = {
-  { &zone1CallOut, &zone1Valve, -1, -1, callOutputDurationMs },
-  { &zone2CallOut, &zone2Valve, -1, -1, zone2callOutputDurationMs }
+  { &zone1CallOut, &zone1Valve, -1, -1, callOutputDurationS },
+  { &zone2CallOut, &zone2Valve, -1, -1, zone2callOutputDurationS }
 };
 
 void activeChanged( bool active, bool activePurge, bool antifreeze ) {
@@ -161,25 +158,35 @@ void readSignals() {
   writeLogEntry( "tempC", temperatureC );
 #endif
 
-  checkForValveOpen( s_zoneCallOut[0] );
-  checkForValveOpen( s_zoneCallOut[1] );
+  for( int i = 0; i < sizeof( s_zoneCallOut ) / sizeof( s_zoneCallOut[0] ); ++i )
+    checkForValveOpen( s_zoneCallOut[i] );
 }
 
-bool timeSinceZone1CallValid = false;
-uint16_t timeSinceZone1Call = 0;
+int8_t s_zone2CallNeededTimer = -1;
+void setSignalAndProcessMonitor( void* v_signal ) {
+  BoolSignal* signal = (BoolSignal*)v_signal;
+  signal->write( true );
+  s_zone2CallNeededTimer = -1; // timer will be deleted.
+  processMonitorTimer();
+}
 
 void determineActions() {
+  if( zone2Valve.currentState ) {
+    // if zone2 valve is active, then stop our timer. 
+    timer.cleanupTimer( s_zone2CallNeededTimer );
+    zone2NeedsCall.write( false );
+    zone2ReallyNeedsCall.write( false );
+  } else if( s_zone2CallNeededTimer == -1 ) {
+    // if zone2 valve is not active, then setup the timer if not already. Should only happen the
+    // first running of processMonitorTimer following zone2Valve going inactive. We decide what stage
+    // we are in based on whether zone2NeedsCall is already set or not.
+    if( zone2NeedsCall.currentState )
+      s_zone2CallNeededTimer = timer.setTimeout( zone2CallIntervalMaxS - zone2CallIntervalMinS, setSignalAndProcessMonitor, &zone2ReallyNeedsCall, true );
+    else
+      s_zone2CallNeededTimer = timer.setTimeout( zone2CallIntervalMinS, setSignalAndProcessMonitor, &zone2NeedsCall, true );
+  }
+  
   // Calculate a new state for our outputs (if any)
-  uint16_t timeSinceZone2 = zone2Call.timeSincePrior();
-  // For zone 2, we consider an invalid interval to be greater than zone2CallIntervalMinS and less than
-  // zone2CallIntervalMaxS - so we will basically trigger it the first time the boiler is hot, but don't
-  // consider it so critical to fire up the burner.
-  zone2NeedsCall.write( !zone2Call.currentState &&
-      (timeSinceZone2 == -1 || 
-        timeSinceZone2 > zone2CallIntervalMinS) );
-  zone2ReallyNeedsCall.write( !zone2Call.currentState &&
-      timeSinceZone2 != -1 && 
-      timeSinceZone2 > zone2CallIntervalMaxS );
   byte numZonesCalling = 0;
   byte numValvesOpen = 0;
   for( byte i = 0; i < s_NumCallSignals; ++i ) {
