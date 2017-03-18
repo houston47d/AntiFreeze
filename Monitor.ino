@@ -128,7 +128,6 @@ void readSignals() {
   uint16_t digitalIoInputs = (((uint16_t) PINB) << 8) | PIND;
 #endif
 
-  bool anyInputsChanged = false;
   for( byte i = 0; i < s_NumSignals; ++i ) {
     BoolSignal* sig( (BoolSignal*) pgm_read_word_near( &s_Signals[i] ) );
     if( sig->source != eNone && sig->type != OUTPUT ) {
@@ -141,7 +140,6 @@ void readSignals() {
           writeLogEntry( *sig );
         sig->priorValid = true;
         sig->priorTransition = s_currentCycleS;
-        anyInputsChanged = true;
       }
     }
 #if !DIAG_STANDALONE
@@ -158,7 +156,7 @@ void readSignals() {
   writeLogEntry( "tempC", temperatureC );
 #endif
 
-  for( int i = 0; i < sizeof( s_zoneCallOut ) / sizeof( s_zoneCallOut[0] ); ++i )
+  for( uint8_t i = 0; i < sizeof( s_zoneCallOut ) / sizeof( s_zoneCallOut[0] ); ++i )
     checkForValveOpen( s_zoneCallOut[i] );
 }
 
@@ -201,9 +199,7 @@ void determineActions() {
   // We consider zone1 to be 'active' if it has called in the last 6 hours.
   zone1CallTherm.write( zone1Call.currentState && !zone1CallOut.currentState );
   uint16_t timeSinceZone1 = zone1CallTherm.timeSincePrior();
-  zone1Active.write( zone1CallTherm.currentState || (timeSinceZone1 != -1 && timeSinceZone1 < HOURStoS( 6 )) );
-
-  bool anyOutputsChanged = false;
+  zone1Active.write( zone1CallTherm.currentState || (timeSinceZone1 != (uint16_t) -1 && timeSinceZone1 < HOURStoS( 6 )) );
 
   if( activeAF.currentState ) {
     if( !s_zoneCallOut[1].active() && 
@@ -212,7 +208,6 @@ void determineActions() {
       // make the call. Then wait up to 10 minutes for the valve to be open (should be plenty even
       // if the furnace has to heat up). The expectation is that the function will never get called.
       setupZoneCallOut( s_zoneCallOut[1] );
-      anyOutputsChanged = true;
     }
   }
   
@@ -238,7 +233,6 @@ void determineActions() {
 //          !zone1Valve.currentState )        // and it isn't zone 1 (our preferred 'purge' zone)
       {
         setupZoneCallOut( s_zoneCallOut[0] );
-        anyOutputsChanged = true;
       }
     }
   }

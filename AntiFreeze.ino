@@ -1,5 +1,6 @@
-#define VERSION "1.9"
+#define VERSION "2.0"
 
+// VERSION 2.0 - stable with use of Wdt and sleep.
 // VERSION 1.9 - use of avr/sleep.h. USE_SLEEP works with DIAG_STANDALONE.
 // VERSION 1.8 - refinements of sleep, watchdog, etc.
 // VERSION 1.7 - completion of RTC usage. Ready for Winter 2016-2017.
@@ -24,15 +25,11 @@
 // DIAG_STANDALONE runs the system through a test script in which the input signals are prescribed.
 // To get it to match the ReferenceLog.csv, CALLS_ACTIVE_LOW needs to be true (the default) and USE_RTC
 // needs to be 0 (so the times are consistent).
-#define DIAG_STANDALONE 0
-#define VERBOSITY 1
+#define DIAG_STANDALONE 1
+#define VERBOSITY 3
 #define USE_RTC 1
-// running standalone is incompatible with sleeping because it relies on the internal timers running.
-// #define USE_SLEEP (!DIAG_STANDALONE && 1)
 #define USE_SLEEP 1
-// the sleep library uses the WDT to periodically wake the processor from sleep states,
-// so it is incompatible with actually using it as a watchdog.
-#define USE_WDT (!USE_SLEEP && 1)
+#define USE_WDT 1
 
 #include "Verbosity.h"
 
@@ -160,16 +157,21 @@ volatile uint16_t s_ioExp = 0;
 #define EEPROM_ADDR_LOG (EEPROM_ADDR_SIG+4)
 #define EEPROM_SIG 0xae
 
-#if USE_WDT
+#define WDTO_DEFAULT WDTO_4S
+#if USE_WDT && !USE_SLEEP
 void watchdogResetFunc() {
   wdt_reset();
 }
 #endif
+#if USE_SLEEP
 volatile bool s_wdtFired = false;
 ISR(WDT_vect) {
-  wdt_disable();
+  // It is not necassary to do anything in the interrupt since we have another watchdog
+  // interval to return to the main loop and set it up again.
+  // wdt_reset();
   s_wdtFired = true;
 }
+#endif
 
 enum Source { eNone, eDigitalIo, eAnalogIo, eIoExpander };
 struct BoolSignal {
@@ -182,7 +184,7 @@ struct BoolSignal {
     uint8_t currentState : 1;
     // uint8_t reserved1 : 6;
     uint8_t pin;
-    const PROGMEM char* name;
+    const char* name; // PROGMEM
     uint16_t priorTransition;
     
     void init();
@@ -191,8 +193,8 @@ struct BoolSignal {
       return( priorValid ? s_currentCycleS - priorTransition : -1 );
     }
     void setLogChanges(bool enable);
-    BoolSignal( Source _source, uint8_t _pin, uint8_t _type, const PROGMEM char* _name, bool _activeLow, bool _log  )
-      : source( _source ), pin( _pin ), type( _type ), name( _name ), logChanges( _log ), priorValid( false ), priorTransition( 0 ), activeLow( _activeLow ), currentState( false ) {}
+    BoolSignal( Source _source, uint8_t _pin, uint8_t _type, const char* _name /*PROGMEM*/, bool _activeLow, bool _log  )
+      : source( _source ), type( _type ), activeLow( _activeLow ), logChanges( _log ), priorValid( false ), currentState( false ), pin( _pin ), name( _name ), priorTransition( 0 ) {}
 };
 
 static const char activeName[] PROGMEM = { "Active" };
@@ -369,8 +371,11 @@ void switchHandler() {
   s_pushButtonIntInstalled = false;
 }
 bool s_ioExpanderInterrupt = false;
+uint8_t s_ioExpanderInterruptCount = 0;
 void ioExpHandler() {
   ioExp0.wordRead(INTCAPA);
+  if (s_ioExpanderInterrupt)
+    ++s_ioExpanderInterruptCount;
   s_ioExpanderInterrupt = true;
 }
 
@@ -386,7 +391,7 @@ void ledTimerExpired() {
   }
   else {
     // Let's set the red if either the IO expander is not present or the logfile couldn't be opened.
-    redState = !ioExpPresent || active.currentState && !logfile;
+    redState = !ioExpPresent || (active.currentState && !logfile);
     if( active.currentState ) {
       if( activeAF.currentState ) {
         // if purge + antifreeze, then fast flash.
@@ -405,9 +410,20 @@ void ledTimerExpired() {
   redLed.write( redState );
 }
 
+volatile uint8_t* s_traceSpace = NULL;
+
 void setup() {
+  s_traceSpace = (uint8_t*) malloc(17);
+  
   Serial.begin(115200);
 
+  _print3(F("Trace ")); _print3((unsigned int)s_traceSpace, HEX); _print3(F(", last ")); _print3(s_traceSpace[16], HEX);
+  for (uint8_t i = 0; i < 16; ++i) {
+    _print3(F(", ")); _print3(s_traceSpace[i], HEX);
+    s_traceSpace[i] = 0;
+  }
+  _println3(F(""));
+  s_traceSpace[16] = 0;
   // Not (currently) using the ADC, so turn it off.
   _print4(F("ADCSRA started as 0x")); _println4(ADCSRA, HEX);
   ADCSRA = 0;
@@ -489,12 +505,14 @@ void setup() {
   // is dirty (since it has to load in the directory entry).
   timer.setInterval( MINUTEStoS(60), syncLogFile, true );
 
-#if USE_WDT
+#if USE_WDT && !USE_SLEEP
   // Enable the hardware watchdog timer for a 2 second timeout, and setup a timer to 
   // reset the timer every 1/4 second. Using the timer ensures that it runs any time
   // that the timer is run.
   timer.setInterval( 250, watchdogResetFunc );
-  wdt_enable( WDTO_2S );
+#endif
+#if USE_WDT
+  wdt_enable( WDTO_DEFAULT );
 #endif
 
 #if !USE_SLEEP
@@ -529,6 +547,11 @@ void processPushButton() {
     ++count;
     delay( 10 );
     timer.run();
+#if USE_WDT && USE_SLEEP
+    // under these conditions, we don't have a timer running to tickle the watchdog, so 
+    // do so now just in case the user holds the button for a long time.
+    wdt_reset();
+#endif
   }
   if( countSeqActive >= 3 ) {
     while( count < 200 && countSeqInactive < 3 ) {
@@ -541,6 +564,10 @@ void processPushButton() {
       countSeqInactive = (!stateNow ? countSeqInactive + 1 : 0);
       delay( 10 );
       timer.run();
+#if USE_WDT && USE_SLEEP
+      // see above.
+      wdt_reset();
+#endif
     }
     unsigned long end = millis();
     bool longPress = (end - start) > 1000;
@@ -550,6 +577,7 @@ void processPushButton() {
         activePrg.write( false );
         activeAF.write( false );
       }
+#if 0
       // cycle through the three states of both off, purge on, both on.
       else if( !activePrg.currentState && !activeAF.currentState ) {
         activePrg.write( true );
@@ -561,6 +589,13 @@ void processPushButton() {
         activePrg.write( false );
         activeAF.write( false );
       }
+#else
+      // toggle anti-freeze on and off.
+      else {
+        activePrg.write( false );
+        activeAF.write( !activeAF.currentState );
+      }
+#endif
     }
     else
       active.write( true );
@@ -573,16 +608,17 @@ void processPushButton() {
 
 void processActiveStateChange() {
   if( active.currentState ) {
-#if USE_WDT
-    // This can take several seconds if the card is not present.
+#if 0 && USE_WDT
+    // This can take several seconds if the card is not present. The default timeout is currently
+    // 4 seconds, so this is unnecessary.
     wdt_disable();
 #endif
 
     // do the SD.begin() here in case the card has been removed/reinserted
     sdCardPresent = SD.begin( sdCardCs );
 
-#if USE_WDT
-    wdt_enable( WDTO_2S );
+#if 0 && USE_WDT
+    wdt_enable( WDTO_DEFAULT );
 #endif
 
     // create a new file
@@ -647,6 +683,9 @@ void loop() {
       processPushButton();
     }
     if( s_ioExpanderInterrupt ) {
+      if (s_ioExpanderInterruptCount > 1)
+        writeLogEntry(F("IoExpCount"), s_ioExpanderInterruptCount);
+      s_ioExpanderInterruptCount = 0;
       s_ioExpanderInterrupt = false;
       _println4( F("  + Expander interrupt") );
       processMonitorTimer();
@@ -713,12 +752,15 @@ void loop() {
       wdTimeoutReg -= 1;
     }
     
+    redLed.write(false);
     cli();
     if( !s_pushButtonPressed && !s_ioExpanderInterrupt ) {
       s_wdtFired = false;
       // Can't use wdt_enable because it clears the WDIE (interrupt enable) bit which we require 
       // for our ISR to be called. This routine is copied from wdt.h/wdt_enable with the WDIE bit
       // enabled and the SREG manipulations removed because I know I'm already in a cli()/sei() pair.
+      // Note that WDE is still being set, which will cause the watchdog timer to do a reset if the
+      // interrupt isn't processed within the next watchdog interval.
       __asm__ __volatile__ (
           "wdr" "\n\t"
           "sts %0, %1" "\n\t"
@@ -739,11 +781,15 @@ void loop() {
         cli();
       }
       sleep_disable();
-      // In case we exited due to one of our interrupts. 
+#if USE_WDT
+      wdt_enable( WDTO_DEFAULT );
+#else
       wdt_disable();
+#endif      
     }
     sei();
 
+    redLed.write(true);
     updateCurrentTime();
 #endif
   }

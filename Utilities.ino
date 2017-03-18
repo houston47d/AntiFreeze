@@ -70,12 +70,14 @@ void generateHMS( char* buffer, unsigned long seconds ) {
 void writeLogEntry( const __FlashStringHelper* message ) {
   if( logfile ) {      
     logfile.print( getCurrentTime() );
-    logfile.print( F(",") );
-    logfile.println( message );
+    logfile.print( F(",,") );
+    logfile.print( message );
+    logfile.println( F(",") );
   }
   _print3( getCurrentTime() );
-  _print3( F(",") );
-  _println2( message );
+  _print3( F(",,") );
+  _print3( message );
+  _println3( F(",") );
 }
   
 void writeLogEntry( struct BoolSignal& signal ) {
@@ -103,6 +105,21 @@ void writeLogEntry( struct BoolSignal& signal ) {
   _println3( signal.currentState ? 1 : 0 );
 }
 
+void writeLogEntry( const __FlashStringHelper* message, uint8_t value ) {
+  if( logfile ) {      
+    logfile.print( getCurrentTime() );
+    logfile.print( F(",,") );
+    logfile.print( message );
+    logfile.print( F(",") );
+    logfile.println( value, HEX );
+  }
+  _print3( getCurrentTime() );
+  _print3( F(",,") );
+  _print3( message );
+  _print3( F(",") );
+  _println3( value, HEX );
+}
+  
 void writeLogEntry( const char* signal, float value ) {
   if( logfile ) {      
     logfile.print( getCurrentTime() );
